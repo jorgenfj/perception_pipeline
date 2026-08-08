@@ -1,0 +1,7 @@
+.claude/
+build*/
+.git/
+.gitignore
+.dockerignore
+README.md
+compile_commands.json
