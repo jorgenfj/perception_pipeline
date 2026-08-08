@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         pkg-config \
         ca-certificates \
         clangd \
+        libusb-1.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # A user whose UID/GID match the host's, so bind-mounted files stay owned by you
@@ -27,9 +28,26 @@ ARG GID=1000
 RUN groupadd --gid ${GID} ${USERNAME} \
     && useradd --uid ${UID} --gid ${GID} --create-home --shell /bin/bash ${USERNAME}
 
+# --- Spinnaker SDK -----------------------------------------------------------
+# FLIR gates the SDK behind an account login, so it cannot be downloaded here.
+# It arrives through a named build context pointing at a host install:
+#
+#   docker build --build-context spinnaker=/opt/spinnaker -t perception_pipeline:dev .
+#
+# Everything but libusb is bundled in lib/. The copy is architecture-specific:
+# an Orin build needs an arm64 SDK of the same version behind that same flag.
+# Placed above the source COPY so editing smoke/ never invalidates this layer.
+COPY --from=spinnaker / /opt/spinnaker
+RUN echo /opt/spinnaker/lib > /etc/ld.so.conf.d/spinnaker.conf && ldconfig
+
+# The GenTL producer is how Spinnaker discovers USB3 and GigE transports;
+# without this the SDK loads but enumerates zero cameras.
+ENV GENICAM_GENTL64_PATH=/opt/spinnaker/lib/spinnaker-gentl
+
 WORKDIR /workspace
 COPY CMakeLists.txt ./
-COPY src ./src
+COPY cmake ./cmake
+COPY smoke ./smoke
 
 RUN cmake -S . -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -41,4 +59,4 @@ RUN cmake -S . -B build -G Ninja \
 # process; add `--user root` to a docker run if you need to install packages.
 USER ${USERNAME}
 
-CMD ["./build/cuda_smoke"]
+CMD ["ctest", "--test-dir", "build", "--output-on-failure"]
