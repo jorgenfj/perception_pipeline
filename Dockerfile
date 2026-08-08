@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
         pkg-config \
         ca-certificates \
+        clangd \
     && rm -rf /var/lib/apt/lists/*
 
 # A user whose UID/GID match the host's, so bind-mounted files stay owned by you

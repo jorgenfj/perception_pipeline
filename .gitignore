@@ -4,5 +4,9 @@ build*/
 
 compile_commands.json
 
+.cache/
+
+.devcontainer/
+
 *.o
 *.so
