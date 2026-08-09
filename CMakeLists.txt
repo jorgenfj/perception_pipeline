@@ -31,6 +31,8 @@ if(PERCEPTION_WITH_SPINNAKER)
   find_package(Spinnaker REQUIRED)
 endif()
 
+add_subdirectory(src)
+
 # enable_testing() must be called here, not in smoke/ -- ctest only discovers
 # tests registered from the directory the build tree is rooted at.
 if(PERCEPTION_BUILD_SMOKE)

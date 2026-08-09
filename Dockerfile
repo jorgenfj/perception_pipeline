@@ -47,6 +47,8 @@ ENV GENICAM_GENTL64_PATH=/opt/spinnaker/lib/spinnaker-gentl
 WORKDIR /workspace
 COPY CMakeLists.txt ./
 COPY cmake ./cmake
+COPY include ./include
+COPY src ./src
 COPY smoke ./smoke
 
 RUN cmake -S . -B build -G Ninja \
