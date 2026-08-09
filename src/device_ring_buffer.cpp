@@ -77,8 +77,11 @@ void DeviceRingBuffer::mark_written(uint32_t slot, const FrameMeta& meta, cudaSt
 bool DeviceRingBuffer::fetch_latest_slot(FrameView& out) const {
   const uint32_t slot = latest_.load(std::memory_order_acquire);
   if (slot == kNoSlot) return false;
-  
-  out.slot_generation = seq_[slot].load(std::memory_order_acquire);
+
+  uint64_t slot_seq = seq_[slot].load(std::memory_order_acquire);
+  if (slot_seq & 1u) return false;
+
+  out.slot_seq = slot_seq;
 
   out.meta = meta_[slot];
   out.ptr = buffers_[slot];
@@ -96,7 +99,7 @@ bool DeviceRingBuffer::get_by_tick(uint64_t tick, FrameView& out) const {
     FrameMeta m = meta_[s];                                // inside the protected region
     std::atomic_thread_fence(std::memory_order_acquire);
     if (seq_[s].load(std::memory_order_relaxed) != s1) continue;  // snapshot torn -> skip
-    out.slot_generation = s1; 
+    out.slot_seq = s1; 
     out.slot_tick = tick; 
     out.meta = m;
     out.ptr = buffers_[s]; 
@@ -109,14 +112,14 @@ bool DeviceRingBuffer::get_by_tick(uint64_t tick, FrameView& out) const {
 }
 
 bool DeviceRingBuffer::read_was_clean(const FrameView& view) const {
-  return seq_[view.slot].load(std::memory_order_acquire) == view.slot_generation;
+  return (seq_[view.slot].load(std::memory_order_acquire) == view.slot_seq) && !(view.slot_seq & 1u);
 }
 
 bool DeviceRingBuffer::snapshot_latest(FrameView& out, void* dst, cudaStream_t stream,
                                        cudaEvent_t copied, uint32_t max_attempts) const {
   for (uint32_t attempt = 0; attempt < max_attempts; ++attempt) {
     FrameView view;
-    if (!fetch_latest_slot(view)) return false;
+    if (!fetch_latest_slot(view)) continue;
 
     cude_error_check(cudaStreamWaitEvent(stream, view.ready, 0), "cudaStreamWaitEvent");
     cude_error_check(cudaMemcpyAsync(dst, view.ptr, slot_bytes_, cudaMemcpyDeviceToDevice, stream),
