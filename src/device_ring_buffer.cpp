@@ -19,7 +19,7 @@ DeviceRingBuffer::DeviceRingBuffer(uint32_t slot_count, std::size_t slot_bytes, 
       buffers_(slot_count, nullptr),
       ready_(slot_count, nullptr),
       meta_(slot_count),
-      generation_(slot_count) {
+      seq_(slot_count) {
   if (slot_count == 0 || slot_bytes == 0) {
     throw std::runtime_error("DeviceRingBuffer: empty ring");
   }
@@ -58,7 +58,7 @@ uint32_t DeviceRingBuffer::acquire_write_slot() {
 
   cude_error_check(cudaEventSynchronize(ready_[slot]), "cudaEventSynchronize");
 
-  generation_[slot].fetch_add(1, std::memory_order_release);
+  seq_[slot].fetch_add(1, std::memory_order_release);
   return slot;
 }
 
@@ -68,6 +68,9 @@ void DeviceRingBuffer::mark_written(uint32_t slot, const FrameMeta& meta, cudaSt
   cude_error_check(cudaEventRecord(ready_[slot], stream), "cudaEventRecord");
 
   meta_[slot] = meta;
+  tick_[slot].store(meta.tick, std::memory_order_relaxed);
+  std::atomic_thread_fence(std::memory_order_release);
+  seq_[slot].fetch_add(1, std::memory_order_relaxed);   // odd -> even: publish complete
   latest_.store(slot, std::memory_order_release);
 }
 
@@ -75,7 +78,7 @@ bool DeviceRingBuffer::fetch_latest_slot(FrameView& out) const {
   const uint32_t slot = latest_.load(std::memory_order_acquire);
   if (slot == kNoSlot) return false;
   
-  out.slot_generation = generation_[slot].load(std::memory_order_acquire);
+  out.slot_generation = seq_[slot].load(std::memory_order_acquire);
 
   out.meta = meta_[slot];
   out.ptr = buffers_[slot];
@@ -85,8 +88,28 @@ bool DeviceRingBuffer::fetch_latest_slot(FrameView& out) const {
   return true;
 }
 
+bool DeviceRingBuffer::get_by_tick(uint64_t tick, FrameView& out) const {
+  for (uint32_t s = 0; s < slot_count(); ++s) {
+    uint64_t s1 = seq_[s].load(std::memory_order_acquire);
+    if (s1 & 1u) continue;                                 // mid-write -> skip
+    if (tick_[s].load(std::memory_order_relaxed) != tick) continue;
+    FrameMeta m = meta_[s];                                // inside the protected region
+    std::atomic_thread_fence(std::memory_order_acquire);
+    if (seq_[s].load(std::memory_order_relaxed) != s1) continue;  // snapshot torn -> skip
+    out.slot_generation = s1; 
+    out.slot_tick = tick; 
+    out.meta = m;
+    out.ptr = buffers_[s]; 
+    out.ready = ready_[s];
+    out.slot = s;
+    out.space = MemSpace::Device;
+    return true;
+  }
+  return false;
+}
+
 bool DeviceRingBuffer::read_was_clean(const FrameView& view) const {
-  return generation_[view.slot].load(std::memory_order_acquire) == view.slot_generation;
+  return seq_[view.slot].load(std::memory_order_acquire) == view.slot_generation;
 }
 
 bool DeviceRingBuffer::snapshot_latest(FrameView& out, void* dst, cudaStream_t stream,

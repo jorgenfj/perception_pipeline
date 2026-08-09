@@ -45,6 +45,9 @@ class DeviceRingBuffer {
   // Newest published slot; false if nothing has been published yet.
   bool fetch_latest_slot(FrameView& out) const;
 
+  // Retrieve FrameView by matching tick
+  bool get_by_tick(uint64_t tick, FrameView& out) const;
+
   // False once the producer has reused the slot this view points at, meaning
   // the data was being overwritten while the consumer worked on it.
   bool read_was_clean(const FrameView& view) const;
@@ -65,7 +68,8 @@ class DeviceRingBuffer {
   std::vector<void*> buffers_;
   std::vector<cudaEvent_t> ready_;
   std::vector<FrameMeta> meta_;
-  std::vector<std::atomic<uint64_t>> generation_;
+  std::vector<std::atomic<uint64_t>> seq_;
+  std::vector<std::atomic<uint64_t>> tick_;
   uint32_t next_write_slot_ = 0;  // producer-only, needs no synchronisation
   std::atomic<uint32_t> latest_{kNoSlot};
 };
