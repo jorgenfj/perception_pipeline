@@ -25,7 +25,7 @@ struct FrameView {
   MemSpace space = MemSpace::Device;
   cudaEvent_t ready = nullptr;
   uint32_t slot = 0;
-  uint64_t generation = 0;
+  uint64_t slot_generation = 0;
 };
 
 }  // namespace perception

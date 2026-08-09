@@ -75,7 +75,7 @@ bool DeviceRingBuffer::fetch_latest_slot(FrameView& out) const {
   const uint32_t slot = latest_.load(std::memory_order_acquire);
   if (slot == kNoSlot) return false;
   
-  out.generation = generation_[slot].load(std::memory_order_acquire);
+  out.slot_generation = generation_[slot].load(std::memory_order_acquire);
 
   out.meta = meta_[slot];
   out.ptr = buffers_[slot];
@@ -85,8 +85,8 @@ bool DeviceRingBuffer::fetch_latest_slot(FrameView& out) const {
   return true;
 }
 
-bool DeviceRingBuffer::still_valid(const FrameView& view) const {
-  return generation_[view.slot].load(std::memory_order_acquire) == view.generation;
+bool DeviceRingBuffer::read_was_clean(const FrameView& view) const {
+  return generation_[view.slot].load(std::memory_order_acquire) == view.slot_generation;
 }
 
 bool DeviceRingBuffer::snapshot_latest(FrameView& out, void* dst, cudaStream_t stream,
@@ -101,7 +101,7 @@ bool DeviceRingBuffer::snapshot_latest(FrameView& out, void* dst, cudaStream_t s
     cude_error_check(cudaEventRecord(copied, stream), "cudaEventRecord");
     cude_error_check(cudaEventSynchronize(copied), "cudaEventSynchronize");
 
-    if (still_valid(view)) {
+    if (read_was_clean(view)) {
       out = view;
       out.ptr = dst;
       return true;

@@ -47,7 +47,7 @@ class DeviceRingBuffer {
 
   // False once the producer has reused the slot this view points at, meaning
   // the data was being overwritten while the consumer worked on it.
-  bool still_valid(const FrameView& view) const;
+  bool read_was_clean(const FrameView& view) const;
 
   // Copy the newest slot into consumer-owned memory and confirm it was not
   // reclaimed mid-copy, retrying if it was.
