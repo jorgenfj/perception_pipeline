@@ -38,15 +38,16 @@ class DeviceRingBuffer {
   // Record readiness against `stream` and hand the slot to consumers. The caller
   // must already have enqueued its production on that stream. Returns
   // immediately -- nothing here waits on the GPU.
-  void mark_written(uint32_t slot, const FrameMeta& meta, cudaStream_t stream);
+  void mark_slot_written(uint32_t slot, uint64_t timestamp_ns, cudaStream_t stream);
 
   // --- consumer ---
 
   // Newest published slot; false if nothing has been published yet.
-  bool fetch_latest_slot(FrameView& out) const;
+  bool view_latest_inplace(FrameView& out) const;
 
-  // Retrieve FrameView by matching tick
-  bool get_by_tick(uint64_t tick, FrameView& out) const;
+  // Retrieve FrameView by matching timestamp within tolerance
+  // best_match, if false return first match within tol
+  bool get_view_by_timestamp(uint64_t tick, uint64_t tol, FrameView& out, bool best_match) const;
 
   // False once the producer has reused the slot this view points at, meaning
   // the data was being overwritten while the consumer worked on it.
@@ -66,10 +67,9 @@ class DeviceRingBuffer {
 
   std::size_t slot_bytes_;
   std::vector<void*> buffers_;
-  std::vector<cudaEvent_t> ready_;
-  std::vector<FrameMeta> meta_;
+  std::vector<cudaEvent_t> data_ready_event_;
   std::vector<std::atomic<uint64_t>> seq_;
-  std::vector<std::atomic<uint64_t>> tick_;
+  std::vector<std::atomic<uint64_t>> timestamp_ns_;
   uint32_t next_write_slot_ = 0;  // producer-only, needs no synchronisation
   std::atomic<uint32_t> latest_{kNoSlot};
 };
