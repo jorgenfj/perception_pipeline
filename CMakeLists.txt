@@ -10,7 +10,6 @@ set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Collect executables in build/bin rather than mirroring the source tree.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 if(NOT CMAKE_BUILD_TYPE)
@@ -26,6 +25,7 @@ option(PERCEPTION_WITH_SPINNAKER "Build against the FLIR Spinnaker SDK" ON)
 option(PERCEPTION_BUILD_SMOKE "Build the toolchain smoke tests" ON)
 
 find_package(CUDAToolkit REQUIRED)
+find_package(Threads REQUIRED)
 
 if(PERCEPTION_WITH_SPINNAKER)
   find_package(Spinnaker REQUIRED)
@@ -36,7 +36,6 @@ add_subdirectory(src)
 # enable_testing() must be called here, not in smoke/ -- ctest only discovers
 # tests registered from the directory the build tree is rooted at.
 if(PERCEPTION_BUILD_SMOKE)
-  enable_testing()
   add_subdirectory(smoke)
 endif()
 

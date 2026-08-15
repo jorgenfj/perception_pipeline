@@ -7,82 +7,102 @@
 #include <cstdint>
 #include <vector>
 
+#include "ring_lease.hpp"
 #include "types.hpp"
 
 namespace perception {
 
-// Sync policy for aquire_write_slot
 enum class ReuseWait {
   HostSync,
   DeviceWait,
 };
 
-// Latest-wins: the producer never blocks on a consumer, so a slow consumer has
-// its slot reused underneath it. still_valid() is how it finds out. For long
-// running consumers, use snapshot_latest() to copy out of the ring buffer.
+enum class WritePolicy {
+  RoundRobin,
+  ScanForFree,
+};
+
 class DeviceRingBuffer {
- public:
+public:
+  static constexpr uint64_t kNoTimestamp = ~0ull;
+
   DeviceRingBuffer(uint32_t slot_count, std::size_t slot_bytes,
-                   ReuseWait reuse_wait = ReuseWait::HostSync, int device_id = 0);
+                   ReuseWait reuse_wait = ReuseWait::HostSync,
+                   WritePolicy write_policy = WritePolicy::RoundRobin,
+                   uint32_t max_consumers = 4, int device_id = 0);
   ~DeviceRingBuffer();
 
-  DeviceRingBuffer(const DeviceRingBuffer&) = delete;
-  DeviceRingBuffer& operator=(const DeviceRingBuffer&) = delete;
+  DeviceRingBuffer(const DeviceRingBuffer &) = delete;
+  DeviceRingBuffer &operator=(const DeviceRingBuffer &) = delete;
 
   uint32_t slot_count() const { return static_cast<uint32_t>(buffers_.size()); }
   std::size_t slot_bytes() const { return slot_bytes_; }
   ReuseWait reuse_wait() const { return reuse_wait_; }
+  WritePolicy write_policy() const { return write_policy_; }
+  uint32_t max_consumers() const { return max_consumers_; }
+
+  uint64_t write_stalls() const {
+    return write_stalls_.load(std::memory_order_relaxed);
+  }
 
   // --- producer ---
 
-  // Next writable slot, round-robin. Waits for the previous work that wrote this
-  // slot to finish, so a kernel can never scribble over a buffer still being
-  // produced into -- on the calling thread under HostSync, on `stream` under
-  // DeviceWait.
-  uint32_t acquire_write_slot(cudaStream_t stream);
+  WriteLease acquire_write(cudaStream_t stream);
 
-  // Where the producing kernel writes. Valid until this slot is acquired again.
-  void* data_at_slot(uint32_t slot);
-
-  // Record readiness against `stream` and hand the slot to consumers. The caller
-  // must already have enqueued its production on that stream. Returns
-  // immediately -- nothing here waits on the GPU.
-  void mark_slot_written(uint32_t slot, uint64_t timestamp_ns, cudaStream_t stream);
+  void *data_at_slot(uint32_t slot) { return buffers_[slot]; }
 
   // --- consumer ---
 
-  // Newest published slot; false if nothing has been published yet.
-  bool view_latest_inplace(FrameView& out) const;
+  ReadLease lease_latest(uint32_t consumer_id, cudaStream_t stream,
+                         uint32_t max_attempts = 4);
 
-  // Retrieve FrameView by matching timestamp within tolerance
-  // best_match, if false return first match within tol
-  bool get_view_by_timestamp(uint64_t tick, uint64_t tol, FrameView& out, bool best_match) const;
+  // Lease the frame nearest `timestamp_ns` within `tol`.
+  // `closest_match` false returns the first slot inside the tolerance.
+  ReadLease lease_by_timestamp(uint64_t timestamp_ns, uint64_t tol,
+                               uint32_t consumer_id, cudaStream_t stream,
+                               bool closest_match, uint32_t max_attempts = 4);
 
-  // False once the producer has reused the slot this view points at, meaning
-  // the data was being overwritten while the consumer worked on it.
-  bool read_was_clean(const FrameView& view) const;
+  // --- unleased inspection ---
+  //
+  // These read slot metadata without holding anything, so the producer may
+  // recycle the slot at any moment.
+  bool view_latest_inplace(FramePeek &out) const;
+  bool get_view_by_timestamp(uint64_t timestamp_ns, uint64_t tol,
+                             FramePeek &out, bool closest_match) const;
+  bool read_was_clean(const FramePeek &view) const;
 
-  // Copy the newest slot into consumer-owned memory and confirm it was not
-  // reclaimed mid-copy, retrying if it was.
-  bool snapshot_latest(FrameView& out, void* dst, cudaStream_t stream, cudaEvent_t copied,
-                       uint32_t max_attempts = 3) const;
+private:
+  friend class ReadLease;
+  friend class WriteLease;
 
- private:
   static constexpr uint32_t kNoSlot = ~0u;
 
-  // Frees whatever has been allocated so far. Idempotent, so it serves both the
-  // destructor and a constructor that throws halfway.
-  void release() noexcept;
+  void cleanup() noexcept;
+
+  void wait_unleased(uint32_t slot);
+  uint32_t claim_free_slot();
+  void order_behind_readers(uint32_t slot, cudaStream_t stream);
+
+  void publish_slot(uint32_t slot, uint64_t timestamp_ns, cudaStream_t stream);
+  void abandon_slot(uint32_t slot) noexcept;
+
+  cudaError_t drop_slot_hold(uint32_t slot, uint32_t consumer_id,
+                             cudaStream_t stream) noexcept;
 
   ReuseWait reuse_wait_;
+  WritePolicy write_policy_;
+  uint32_t max_consumers_;
   std::size_t slot_bytes_;
-  std::vector<void*> buffers_;
+  std::vector<void *> buffers_;
   std::vector<cudaEvent_t> data_ready_event_;
-  std::vector<cudaStream_t> write_stream_;
+  std::vector<cudaEvent_t> read_done_event_;
   std::vector<std::atomic<uint64_t>> seq_;
   std::vector<std::atomic<uint64_t>> timestamp_ns_;
-  uint32_t next_write_slot_ = 0;  // producer-only, needs no synchronisation
+  std::vector<std::atomic<uint32_t>> readers_;
+
+  uint32_t next_write_slot_ = 0;
   std::atomic<uint32_t> latest_{kNoSlot};
+  std::atomic<uint64_t> write_stalls_{0};
 };
 
-}  // namespace perception
+} // namespace perception
