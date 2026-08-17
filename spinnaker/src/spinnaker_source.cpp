@@ -2,6 +2,7 @@
 
 #include <SpinGenApi/SpinnakerGenApi.h>
 
+#include <cstdarg>
 #include <cstdio>
 #include <stdexcept>
 #include <string>
@@ -11,6 +12,17 @@ namespace perception {
 namespace {
 
 using namespace Spinnaker::GenApi;
+
+#ifdef PERCEPTION_TRACE_POOL
+[[gnu::format(printf, 1, 2)]] void trace_pool(const char* fmt, ...) {
+  std::va_list args;
+  va_start(args, fmt);
+  std::vfprintf(stderr, fmt, args);
+  va_end(args);
+}
+#else
+[[gnu::format(printf, 1, 2)]] void trace_pool(const char*, ...) {}
+#endif
 
 // USB3 packet size. Buffers not rounded up to it tear on USB3 cameras; on GigE
 // it is harmless padding.
@@ -173,6 +185,10 @@ void SpinnakerSource::bind_buffers(FrameSink& sink) {
 void SpinnakerSource::start(FrameSink& sink) {
   if (running_.exchange(true)) return;
   held_.assign(sink.slot_count(), nullptr);
+  held_since_.assign(sink.slot_count(), std::chrono::steady_clock::time_point{});
+  held_now_.store(0, std::memory_order_relaxed);
+  held_peak_.store(0, std::memory_order_relaxed);
+  was_starved_ = false;
   thread_ = std::thread(&SpinnakerSource::run, this, std::ref(sink));
 }
 
@@ -184,8 +200,20 @@ void SpinnakerSource::stop() {
 void SpinnakerSource::reclaim(FrameSink& sink) {
   for (uint32_t slot = 0; slot < held_.size(); ++slot) {
     if (held_[slot] && sink.consumed(slot)) {
+      const auto held_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                               std::chrono::steady_clock::now() - held_since_[slot])
+                               .count();
       held_[slot]->Release();
       held_[slot] = nullptr;
+      held_now_.fetch_sub(1, std::memory_order_relaxed);
+
+      reclaimed_.fetch_add(1, std::memory_order_relaxed);
+      hold_sum_us_.fetch_add(static_cast<uint64_t>(held_us), std::memory_order_relaxed);
+      uint64_t peak = hold_max_us_.load(std::memory_order_relaxed);
+      while (static_cast<uint64_t>(held_us) > peak &&
+             !hold_max_us_.compare_exchange_weak(peak, static_cast<uint64_t>(held_us),
+                                                 std::memory_order_relaxed)) {
+      }
     }
   }
 }
@@ -200,6 +228,7 @@ void SpinnakerSource::release_held() {
     }
     image = nullptr;
   }
+  held_now_.store(0, std::memory_order_relaxed);
 }
 
 void SpinnakerSource::run(FrameSink& sink) {
@@ -219,6 +248,24 @@ void SpinnakerSource::run(FrameSink& sink) {
     try {
       reclaim(sink);
 
+      const uint32_t held = held_now_.load(std::memory_order_relaxed);
+      uint32_t peak = held_peak_.load(std::memory_order_relaxed);
+      while (held > peak &&
+             !held_peak_.compare_exchange_weak(peak, held, std::memory_order_relaxed)) {
+      }
+      if (held >= held_.size()) {
+        starved_.fetch_add(1, std::memory_order_relaxed);
+        if (!was_starved_) {
+          was_starved_ = true;
+          trace_pool("camera pool starved: all %zu user buffers held, "
+                     "nothing free for the transport (waiting up to %llu ms)\n",
+                     held_.size(), static_cast<unsigned long long>(config_.timeout_ms));
+        }
+      } else if (was_starved_) {
+        was_starved_ = false;
+        trace_pool("camera pool recovered: %u/%zu buffers held\n", held, held_.size());
+      }
+
       Spinnaker::ImagePtr image = camera_->GetNextImage(config_.timeout_ms);
 
       if (image->IsIncomplete()) {
@@ -237,7 +284,9 @@ void SpinnakerSource::run(FrameSink& sink) {
       // Held, not released: the reader works on this buffer directly, so
       // handing it back now would let the camera overwrite a frame still in
       // flight. The sink tells us when it has retired.
+      if (!held_[slot]) held_now_.fetch_add(1, std::memory_order_relaxed);
       held_[slot] = image;
+      held_since_[slot] = std::chrono::steady_clock::now();
       sink.commit(slot, image->GetTimeStamp(), geometry_.frame_bytes);
       delivered_.fetch_add(1, std::memory_order_relaxed);
     } catch (const Spinnaker::Exception& e) {

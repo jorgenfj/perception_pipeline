@@ -22,6 +22,12 @@ add_library(perception_spinnaker
 
 target_include_directories(perception_spinnaker PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
+# PUBLIC so the composition root's stats line is guarded by the same switch as
+# the source's own tracing, rather than the two drifting apart.
+if(PERCEPTION_TRACE_POOL)
+  target_compile_definitions(perception_spinnaker PUBLIC PERCEPTION_TRACE_POOL)
+endif()
+
 # PUBLIC on Spinnaker: spinnaker_source.hpp includes <Spinnaker.h> and takes a
 # CameraPtr in its constructor, so the SDK is part of this library's interface.
 # yaml-cpp is PRIVATE -- the config headers expose plain structs, and only the

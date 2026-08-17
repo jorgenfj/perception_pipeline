@@ -203,6 +203,11 @@ int main(int argc, char** argv) {
             std::printf(" | latency min/mean/max %.2f/%.2f/%.2f ms", latency.min_ms,
                         latency.mean_ms(), latency.max_ms);
           }
+#ifdef PERCEPTION_TRACE_POOL
+          std::printf(" | pool %u/%u held peak=%u starved=%lu hold mean/max %.1f/%lu us",
+                      source.held(), config.pipeline.ingress_depth, source.held_peak(),
+                      source.starved(), source.hold_mean_us(), source.hold_max_us());
+#endif
 #ifdef PERCEPTION_WITH_DISPLAY
           if (viewer) std::printf(" | present %.2f ms", viewer->last_present_ms());
 #endif
@@ -224,6 +229,13 @@ int main(int argc, char** argv) {
                 "timeouts=%lu stalls=%lu failed=%lu\n",
                 source.delivered(), upload.uploaded(), consumed, source.incomplete(),
                 source.foreign(), source.timeouts(), device_ring.write_stalls(), upload.failed());
+#ifdef PERCEPTION_TRACE_POOL
+    std::printf("pool: depth=%u peak=%u still-held=%u starved=%lu reclaimed=%lu "
+                "hold mean/max %.1f/%lu us\n",
+                config.pipeline.ingress_depth, source.held_peak(), source.held(),
+                source.starved(), source.reclaimed(), source.hold_mean_us(),
+                source.hold_max_us());
+#endif
   } catch (const std::exception& e) {
     std::printf("FAILED: %s\n", e.what());
     status = 1;

@@ -23,6 +23,7 @@ endif()
 
 option(PERCEPTION_WITH_SPINNAKER "Build against the FLIR Spinnaker SDK" OFF)
 option(PERCEPTION_WITH_DISPLAY "Build the app's local GL viewer (needs GLFW and OpenGL)" ON)
+option(PERCEPTION_TRACE_POOL "Log camera user-buffer pool starvation as it happens" OFF)
 option(PERCEPTION_BUILD_SMOKE "Build the toolchain smoke tests" ON)
 option(PERCEPTION_BUILD_TESTS "Build the pipeline behaviour tests" ON)
 
@@ -66,6 +67,7 @@ endif()
 
 message(STATUS "CUDA toolkit ${CUDAToolkit_VERSION}, archs: ${CMAKE_CUDA_ARCHITECTURES}")
 message(STATUS "GL viewer: ${PERCEPTION_WITH_DISPLAY}")
+message(STATUS "Pool trace: ${PERCEPTION_TRACE_POOL}")
 if(PERCEPTION_WITH_SPINNAKER)
   message(STATUS "Spinnaker ${Spinnaker_VERSION} (${Spinnaker_LIBRARY})")
 endif()
