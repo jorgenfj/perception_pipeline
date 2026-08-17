@@ -1,0 +1,100 @@
+# Driver config for `acquire`, the full pipeline. Every section is optional;
+# anything omitted falls back to the defaults in app_config.hpp, and any node
+# not listed stays at whatever the camera already had.
+#
+# The `camera:` section is the same schema spinnaker/ defines and parses -- see
+# spinnaker/config/camera.yaml, which the standalone `spin_acquire` reads. Both
+# tools accept either file; each ignores the sections it does not own.
+
+camera:
+  # Empty picks the first camera found. Set it once there is more than one rig.
+  serial: ""
+  timeout_ms: 1000
+
+  # GenICam nodes on the camera node map, applied in this order before
+  # acquisition starts. Order matters: ExposureAuto has to be Off before
+  # ExposureTime is writable, and geometry has to be set before PayloadSize
+  # (and therefore the buffer size) means anything.
+  #
+  # The sequence form below fixes the order explicitly. A plain map works too
+  # and reads better, but leans on yaml-cpp preserving document order.
+  features:
+    - AcquisitionMode: Continuous
+    - TriggerMode: "Off"
+
+    - PixelFormat: BayerRG8
+    - Width: 1440
+    - Height: 1080
+    - OffsetX: 0
+    - OffsetY: 0
+
+    - ExposureAuto: "Off"
+    - ExposureTime: 8000.0     # microseconds
+
+    - GainAuto: "Off"
+    - Gain: 0.0
+
+    - AcquisitionFrameRateEnable: true
+    - AcquisitionFrameRate: 60.0
+
+    # GigE link tuning. Jumbo frames need the NIC MTU raised to match, and the
+    # throughput limit is what stops the camera outrunning the link.
+    # - GevSCPSPacketSize: 9000
+    # - GevSCPD: 4000
+    # - DeviceLinkThroughputLimit: 85000000
+
+  # The same, against the transport-layer stream node map.
+  #
+  # NewestOnly is latest-wins at the driver, matching the rings: the default
+  # queues stale frames, so any hiccup leaves the pipeline chewing through a
+  # backlog instead of dropping it. It costs a third buffer -- the overwrite
+  # modes keep one in hand to swap.
+  #
+  # StreamBufferCountMode is forced to Manual by the source and cannot be set
+  # here: on Auto the engine sizes its own pool and ignores the user buffers,
+  # which silently drops the zero-copy path.
+  stream_features:
+    - StreamBufferHandlingMode: NewestOnly
+
+pipeline:
+  # The ingress ring IS the camera's buffer pool on this path, so its depth has
+  # to cover full upload latency, not just the grab -- a slot only comes back
+  # once its H2D has retired. Too shallow shows up as `timeouts` climbing.
+  ingress_depth: 8
+  device_depth: 4
+  max_consumers: 1
+  device_id: 0
+
+  # DeviceWait keeps slot reuse on the stream; HostSync blocks the upload
+  # thread until the previous read retires.
+  reuse_wait: DeviceWait
+
+  # RoundRobin is required if upload.use_graph is on -- ScanForFree picks slots
+  # from runtime lease state, so a graph cannot bake the index.
+  write_policy: RoundRobin
+
+# The local GL viewer. One more consumer on the device ring; `enable: false`
+# removes it and the pipeline is unchanged.
+#
+# vsync off on purpose: parking the swap until the panel is ready adds up to a
+# full refresh period to the very latency this is here to show. Turn it on only
+# if you are chasing tearing rather than milliseconds.
+#
+# The bar reads capture -> ready-to-present, relative to the fastest frame seen
+# in the last few seconds. It shows jitter and queueing honestly; it cannot see
+# exposure, readout or link transport, so it is not glass-to-glass. For that,
+# point the camera at a millisecond stopwatch and photograph screen and monitor
+# together.
+display:
+  enable: true
+  window_width: 1440
+  window_height: 1080
+  vsync: false
+  latency_scale_ms: 100.0
+
+upload:
+  scratch_slots: 4
+  pop_timeout_ms: 100
+  # Needs a transform and RoundRobin; the upload-only path has nothing to
+  # capture beyond a single memcpy.
+  use_graph: false

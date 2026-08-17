@@ -17,6 +17,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         clangd \
         libusb-1.0-0 \
+        libyaml-cpp-dev \
+        libglfw3-dev \
+        libgl-dev \
+        libglvnd-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # A user whose UID/GID match the host's, so bind-mounted files stay owned by you
@@ -35,7 +39,10 @@ RUN groupadd --gid ${GID} ${USERNAME} \
 #   docker build --build-context spinnaker=/opt/spinnaker -t perception_pipeline:dev .
 #
 # Everything but libusb is bundled in lib/. The copy is architecture-specific:
-# an Orin build needs an arm64 SDK of the same version behind that same flag.
+# an Orin build needs an arm64 SDK behind that same flag. Match major.minor,
+# not the full build number -- FLIR versions the arch packages independently
+# (x86_64 ships 4.2.0.88 where ARM64 ships 4.2.0.21), so there is no arm64
+# package carrying the exact build string of the amd64 one.
 # Placed above the source COPY so editing smoke/ never invalidates this layer.
 COPY --from=spinnaker / /opt/spinnaker
 RUN echo /opt/spinnaker/lib > /etc/ld.so.conf.d/spinnaker.conf && ldconfig
@@ -47,9 +54,11 @@ ENV GENICAM_GENTL64_PATH=/opt/spinnaker/lib/spinnaker-gentl
 WORKDIR /workspace
 COPY CMakeLists.txt ./
 COPY cmake ./cmake
-COPY include ./include
-COPY src ./src
+COPY pipeline ./pipeline
+COPY spinnaker ./spinnaker
+COPY app ./app
 COPY smoke ./smoke
+COPY tests ./tests
 
 RUN cmake -S . -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=RelWithDebInfo \

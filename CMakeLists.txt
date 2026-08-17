@@ -21,8 +21,10 @@ if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
       "CUDA architectures to build for")
 endif()
 
-option(PERCEPTION_WITH_SPINNAKER "Build against the FLIR Spinnaker SDK" ON)
+option(PERCEPTION_WITH_SPINNAKER "Build against the FLIR Spinnaker SDK" OFF)
+option(PERCEPTION_WITH_DISPLAY "Build the app's local GL viewer (needs GLFW and OpenGL)" ON)
 option(PERCEPTION_BUILD_SMOKE "Build the toolchain smoke tests" ON)
+option(PERCEPTION_BUILD_TESTS "Build the pipeline behaviour tests" ON)
 
 find_package(CUDAToolkit REQUIRED)
 find_package(Threads REQUIRED)
@@ -31,15 +33,39 @@ if(PERCEPTION_WITH_SPINNAKER)
   find_package(Spinnaker REQUIRED)
 endif()
 
-add_subdirectory(src)
+# Only the app uses these, but they are found here so a missing GLFW reports at
+# configure time with the option to turn off, rather than midway through a build.
+if(PERCEPTION_WITH_DISPLAY)
+  # GLVND: on Jetson the NVIDIA driver installs libOpenGL/libGLX, and LEGACY
+  # would resolve to a Mesa libGL that cannot share a context with CUDA.
+  set(OpenGL_GL_PREFERENCE GLVND)
+  find_package(OpenGL REQUIRED)
+  find_package(glfw3 REQUIRED)
+endif()
 
-# enable_testing() must be called here, not in smoke/ -- ctest only discovers
-# tests registered from the directory the build tree is rooted at.
+add_subdirectory(pipeline)
+
+# spinnaker/ builds without CUDA and app/ is what joins the two, so the app
+# only exists when both halves do.
+if(PERCEPTION_WITH_SPINNAKER)
+  add_subdirectory(spinnaker)
+  add_subdirectory(app)
+endif()
+
+if(PERCEPTION_BUILD_SMOKE OR PERCEPTION_BUILD_TESTS)
+  enable_testing()
+endif()
+
 if(PERCEPTION_BUILD_SMOKE)
   add_subdirectory(smoke)
 endif()
 
+# if(PERCEPTION_BUILD_TESTS)
+#   add_subdirectory(tests)
+# endif()
+
 message(STATUS "CUDA toolkit ${CUDAToolkit_VERSION}, archs: ${CMAKE_CUDA_ARCHITECTURES}")
+message(STATUS "GL viewer: ${PERCEPTION_WITH_DISPLAY}")
 if(PERCEPTION_WITH_SPINNAKER)
   message(STATUS "Spinnaker ${Spinnaker_VERSION} (${Spinnaker_LIBRARY})")
 endif()
