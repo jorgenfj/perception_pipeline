@@ -71,6 +71,16 @@ public:
                              FramePeek &out, bool closest_match) const;
   bool read_was_clean(const FramePeek &view) const;
 
+  // --- consumer wakeup ---
+  uint64_t wait_seq() const { return wait_seq_.load(std::memory_order_acquire); }
+  void wait_for_publish(uint64_t seen) const {
+    wait_seq_.wait(seen, std::memory_order_acquire);
+  }
+
+  // Release every waiter so it can re-check and, typically, exit. Safe to call
+  // repeatedly and from a thread that publishes nothing.
+  void wake_all();
+
 private:
   friend class ReadLease;
   friend class WriteLease;
@@ -103,6 +113,7 @@ private:
   uint32_t next_write_slot_ = 0;
   std::atomic<uint32_t> latest_{kNoSlot};
   std::atomic<uint64_t> write_stalls_{0};
+  std::atomic<uint64_t> wait_seq_{0};
 };
 
 } // namespace perception

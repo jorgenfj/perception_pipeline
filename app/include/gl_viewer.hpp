@@ -45,6 +45,13 @@ class GlViewer {
   // Pump window events. Call every iteration, including idle ones, or the
   // window stops responding while the pipeline waits for a frame.
   void poll();
+
+  // Pump window events, sleeping up to `timeout_s` for one to arrive. Blocks on
+  // the display connection rather than spinning, so an idle viewer costs
+  // nothing; the timeout caps how long it takes to notice a new ring frame,
+  // which arrives on a different wakeup path entirely.
+  void poll_wait(double timeout_s);
+
   bool should_close() const;
 
   // Enqueues the D2D copy out of `src` on `stream`, then draws. `src` must be

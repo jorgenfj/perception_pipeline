@@ -107,6 +107,8 @@ GlViewer::~GlViewer() {
 
 void GlViewer::poll() { glfwPollEvents(); }
 
+void GlViewer::poll_wait(double timeout_s) { glfwWaitEventsTimeout(timeout_s); }
+
 bool GlViewer::should_close() const {
   return window_ == nullptr || glfwWindowShouldClose(window_) ||
          glfwGetKey(window_, GLFW_KEY_ESCAPE) == GLFW_PRESS ||

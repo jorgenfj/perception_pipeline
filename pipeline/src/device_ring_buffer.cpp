@@ -159,6 +159,14 @@ void DeviceRingBuffer::publish_slot(uint32_t slot, uint64_t timestamp_ns,
   std::atomic_thread_fence(std::memory_order_release);
   seq_[slot].fetch_add(1, std::memory_order_relaxed); // -> even
   latest_.store(slot, std::memory_order_release);
+
+  wait_seq_.fetch_add(1, std::memory_order_release);
+  wait_seq_.notify_all();
+}
+
+void DeviceRingBuffer::wake_all() {
+  wait_seq_.fetch_add(1, std::memory_order_release);
+  wait_seq_.notify_all();
 }
 
 void DeviceRingBuffer::abandon_slot(uint32_t slot) noexcept {

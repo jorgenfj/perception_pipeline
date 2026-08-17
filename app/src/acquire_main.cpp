@@ -9,8 +9,10 @@
 
 #include <Spinnaker.h>
 #include <cuda_runtime.h>
+#include <pthread.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
@@ -35,10 +37,11 @@
 
 namespace {
 
-volatile std::sig_atomic_t g_stop = 0;
-void onSignal(int) { g_stop = 1; }
+std::atomic<bool> g_stop{false};
+sigset_t stop_signals;
 
 constexpr const char* kDefaultConfig = "config/acquire.yaml";
+constexpr double kViewerPollSeconds = 0.005;
 
 using perception::cuda_error_check;
 
@@ -64,7 +67,12 @@ struct LatencyWindow {
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::signal(SIGINT, onSignal);
+  sigemptyset(&stop_signals);
+  sigaddset(&stop_signals, SIGINT);
+  if (pthread_sigmask(SIG_BLOCK, &stop_signals, nullptr) != 0) {
+    std::printf("FAILED: could not block SIGINT\n");
+    return 1;
+  }
 
   const std::string config_path = argc > 1 ? argv[1] : kDefaultConfig;
 
@@ -86,10 +94,6 @@ int main(int argc, char** argv) {
                 geometry.pixel_format.c_str(), geometry.frame_bytes, geometry.buffer_bytes,
                 source.min_slot_count());
 
-    // The transform decides what the device ring holds, so it is built before
-    // the ring and asked for its output geometry rather than the size being
-    // duplicated here. UploadStage re-checks the slot size and throws on a
-    // mismatch, but getting it right at the source beats catching it.
     perception::DebayerTransform debayer;
     const perception::ImageDesc display_desc = debayer.output_desc(desc);
     std::printf("transform: %s -> %ux%u stride=%u RGBA8, %zu bytes/frame\n", debayer.name(),
@@ -111,66 +115,145 @@ int main(int argc, char** argv) {
     // the upload-only path.
     perception::UploadStage upload(ingress, device_ring, debayer, desc, config.upload);
 
+    std::thread signal_relay([&device_ring] {
+      int signal_number = 0;
+      sigwait(&stop_signals, &signal_number);
+      g_stop.store(true, std::memory_order_relaxed);
+      device_ring.wake_all();
+    });
+
+    // Set by the viewer thread when the window is closed, so main leaves too.
+    std::atomic<bool> viewer_closed{false};
+
 #ifdef PERCEPTION_WITH_DISPLAY
-    std::unique_ptr<perception::GlViewer> viewer;
+    // The viewer is a second, independent consumer of the ring rather than
+    // something main hands frames to: the ring is already multi-consumer, and
+    // that keeps the debug window off the pipeline's critical path entirely --
+    // it leases on its own id and its own stream, and if it falls behind it
+    // simply misses frames.
+    //
+    // It owns the window end to end. Everything GL has to happen on the thread
+    // that created the context, so the GlViewer is constructed, pumped, drawn
+    // with, and destroyed here and nowhere else.
+    std::thread viewer_thread;
     if (config.display.enable) {
-      perception::GlViewer::Config view_config;
-      view_config.window_width = config.display.window_width;
-      view_config.window_height = config.display.window_height;
-      view_config.vsync = config.display.vsync;
-      view_config.latency_scale_ms = config.display.latency_scale_ms;
-      try {
-        viewer = std::make_unique<perception::GlViewer>(display_desc, view_config);
-        std::printf("display: %ux%u vsync=%s scale=%.0fms (esc/q to quit)\n",
-                    config.display.window_width, config.display.window_height,
-                    config.display.vsync ? "on" : "off", config.display.latency_scale_ms);
-      } catch (const std::exception& e) {
-        // Not fatal: the pipeline is the point, the window is an inspector.
-        std::printf("display: disabled (%s)\n", e.what());
-      }
+      viewer_thread = std::thread([&] {
+        perception::GlViewer::Config view_config;
+        view_config.window_width = config.display.window_width;
+        view_config.window_height = config.display.window_height;
+        view_config.vsync = config.display.vsync;
+        view_config.latency_scale_ms = config.display.latency_scale_ms;
+
+        std::unique_ptr<perception::GlViewer> viewer;
+        try {
+          viewer = std::make_unique<perception::GlViewer>(display_desc, view_config);
+          std::printf("display: %ux%u vsync=%s scale=%.0fms (esc/q to quit)\n",
+                      config.display.window_width, config.display.window_height,
+                      config.display.vsync ? "on" : "off", config.display.latency_scale_ms);
+        } catch (const std::exception& e) {
+          // Not fatal: the pipeline is the point, the window is an inspector.
+          std::printf("display: disabled (%s)\n", e.what());
+          return;
+        }
+
+        // Per-thread CUDA state, like every other worker sets for itself.
+        if (cudaSetDevice(config.pipeline.device_id) != cudaSuccess) {
+          std::printf("display: disabled (cudaSetDevice failed on the viewer thread)\n");
+          return;
+        }
+        perception::CudaStream view_stream;
+        uint32_t view_slot = ~0u;
+        uint64_t view_seq = ~0ull;
+
+        try {
+          // viewer_closed is also an inbound signal: main sets it when it is
+          // tearing down, which is how this thread learns to leave on the paths
+          // where the window itself was never closed.
+          while (!g_stop.load(std::memory_order_relaxed) &&
+                 !viewer_closed.load(std::memory_order_relaxed)) {
+            // Blocks on the display connection, so an idle window costs
+            // nothing. The ring is checked afterwards on the same tick.
+            viewer->poll_wait(kViewerPollSeconds);
+            if (viewer->should_close()) break;
+
+            perception::FramePeek peek;
+            if (!device_ring.view_latest_inplace(peek) ||
+                (peek.slot == view_slot && peek.slot_seq == view_seq)) {
+              continue;
+            }
+
+            perception::ReadLease lease = device_ring.lease_latest(1, view_stream);
+            if (!lease.valid()) continue;
+            view_slot = lease.slot();
+            view_seq = lease.seq();
+
+            cuda_error_check(cudaStreamWaitEvent(view_stream, lease.data_ready_event(), 0),
+                             "cudaStreamWaitEvent(viewer)");
+
+            double latency_ms = -1.0;
+            int64_t age_ns = 0;
+            if (probe.age_ns(lease.timestamp_ns(), age_ns)) {
+              latency_ms = static_cast<double>(age_ns) * 1e-6;
+            }
+
+            viewer->present(lease.data(), view_stream, latency_ms);
+
+            if (viewer->presented() % 60 == 0) {
+              std::printf("display: presented=%lu present %.2f ms\n", viewer->presented(),
+                          viewer->last_present_ms());
+            }
+          }
+        } catch (const std::exception& e) {
+          std::printf("display: stopped (%s)\n", e.what());
+        }
+
+        // Whichever way the loop ended, main is waiting on the ring and has to
+        // be told the window is gone.
+        viewer_closed.store(true, std::memory_order_relaxed);
+        device_ring.wake_all();
+        cudaStreamSynchronize(view_stream);
+      });
     }
 #endif
 
-    source.start(sink);
-    upload.start();
+    auto stop_helpers = [&] {
+      viewer_closed.store(true, std::memory_order_relaxed);
+      device_ring.wake_all();
+#ifdef PERCEPTION_WITH_DISPLAY
+      if (viewer_thread.joinable()) viewer_thread.join();
+#endif
+      if (signal_relay.joinable()) {
+        pthread_kill(signal_relay.native_handle(), SIGINT);
+        signal_relay.join();
+      }
+    };
 
-    perception::CudaStream consumer;
     uint64_t consumed = 0;
     uint32_t last_slot = ~0u;
     uint64_t last_seq = ~0ull;
     LatencyWindow latency;
 
-    // Both workers hold references to the rings, which are destroyed first on
-    // the way out of this scope -- so they have to be stopped before anything
-    // unwinds, on the error path as much as the normal one.
+    perception::CudaStream consumer;
     try {
-      while (!g_stop) {
-#ifdef PERCEPTION_WITH_DISPLAY
-        // Pumped every iteration, idle ones included, or the window stops
-        // responding whenever the camera pauses.
-        if (viewer) {
-          viewer->poll();
-          if (viewer->should_close()) break;
-        }
-#endif
+      source.start(sink);
+      upload.start();
 
-        // Unleased peek first. A lease taken only to discover nothing is new
-        // still bumps the slot's reader count, and that stalls the producer in
-        // wait_unleased for a read that never happens.
+      while (!g_stop.load(std::memory_order_relaxed) &&
+                 !viewer_closed.load(std::memory_order_relaxed)) {
+        const uint64_t seen = device_ring.wait_seq();
+
         perception::FramePeek peek;
         if (!device_ring.view_latest_inplace(peek) ||
             (peek.slot == last_slot && peek.slot_seq == last_seq)) {
-          std::this_thread::sleep_for(std::chrono::microseconds(200));
+          device_ring.wait_for_publish(seen);
           continue;
         }
 
-        // Discovery may have moved on since the peek; latest-wins either way.
         perception::ReadLease lease = device_ring.lease_latest(0, consumer);
         if (!lease.valid()) continue;
         last_slot = lease.slot();
         last_seq = lease.seq();
 
-        // Queue-side ordering only -- returns immediately, no CPU block.
         cuda_error_check(cudaStreamWaitEvent(consumer, lease.data_ready_event(), 0),
                          "cudaStreamWaitEvent");
 
@@ -183,13 +266,7 @@ int main(int argc, char** argv) {
           latency.add(latency_ms);
         }
 
-#ifdef PERCEPTION_WITH_DISPLAY
-        // The lease still holds the slot, so the copy reads stable memory; the
-        // lease's destructor records read completion on this same stream.
-        if (viewer) viewer->present(lease.data(), consumer, latency_ms);
-#else
         (void)latency_ms;
-#endif
 
         ++consumed;
 
@@ -208,9 +285,6 @@ int main(int argc, char** argv) {
                       source.held(), config.pipeline.ingress_depth, source.held_peak(),
                       source.starved(), source.hold_mean_us(), source.hold_max_us());
 #endif
-#ifdef PERCEPTION_WITH_DISPLAY
-          if (viewer) std::printf(" | present %.2f ms", viewer->last_present_ms());
-#endif
           std::printf("\n");
           latency.reset();
         }
@@ -218,11 +292,13 @@ int main(int argc, char** argv) {
     } catch (...) {
       source.stop();
       upload.stop();
+      stop_helpers();
       throw;
     }
 
     source.stop();
     upload.stop();
+    stop_helpers();
     cudaStreamSynchronize(consumer);
 
     std::printf("\ndelivered=%lu uploaded=%lu consumed=%lu incomplete=%lu foreign=%lu "

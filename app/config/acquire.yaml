@@ -62,7 +62,11 @@ pipeline:
   # once its H2D has retired. Too shallow shows up as `timeouts` climbing.
   ingress_depth: 8
   device_depth: 4
-  max_consumers: 1
+  # 2, because the GL viewer leases the ring on its own thread as an
+  # independent consumer alongside the pipeline consumer. Drop back to 1 for a
+  # headless build -- it saves a read-completion event per slot and nothing
+  # else.
+  max_consumers: 2
   device_id: 0
 
   # DeviceWait keeps slot reuse on the stream; HostSync blocks the upload
