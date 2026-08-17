@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <stop_token>
 #include <vector>
 
 namespace perception {
@@ -82,7 +83,13 @@ class HostIngressRing {
   };
 
   // Oldest committed slot. Blocks up to `timeout`; false on timeout or stop.
+  // For callers driving the ring inline, where the timeout is the only thing
+  // that hands control back.
   bool pop(Staged& out, std::chrono::milliseconds timeout);
+
+  // The same, but with no deadline: sleeps until a frame is committed, the ring
+  // stops, or `stoken` is asked to stop.
+  bool pop(Staged& out, std::stop_token stoken);
 
   // Return the slot to the producer. `stream` must be the stream the H2D
   // reading this slot was enqueued on -- the event recorded here is what
@@ -106,6 +113,8 @@ class HostIngressRing {
   // destructor and a constructor that throws halfway.
   void release_all() noexcept;
 
+  bool take_ready(Staged& out);
+
   // Where a slot is in the round trip. Only External needs to track this: the
   // producer has to tell "handed to the consumer" from "back in the pool", and
   // in Staged mode the acquired_/released_ counters already say that.
@@ -120,8 +129,8 @@ class HostIngressRing {
   std::vector<SlotState> state_;
 
   mutable std::mutex mutex_;
-  std::condition_variable slot_free_;    // producer waits
-  std::condition_variable frame_ready_;  // consumer waits
+  std::condition_variable slot_free_;  // producer waits
+  std::condition_variable_any frame_ready_;  // consumer waits
 
   // Committed and waiting to be popped, oldest first. Explicit rather than
   // derived from a counter, because External commits in whatever order the

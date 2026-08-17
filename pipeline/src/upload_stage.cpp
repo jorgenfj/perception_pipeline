@@ -184,10 +184,19 @@ void UploadStage::release() noexcept {
   }
 }
 
-bool UploadStage::step() {
+bool UploadStage::step(std::chrono::milliseconds timeout) {
   HostIngressRing::Staged staged;
-  if (!in_->pop(staged, config_.pop_timeout)) return false;
+  if (!in_->pop(staged, timeout)) return false;
+  return process(staged);
+}
 
+bool UploadStage::step_blocking(std::stop_token stoken) {
+  HostIngressRing::Staged staged;
+  if (!in_->pop(staged, std::move(stoken))) return false;
+  return process(staged);
+}
+
+bool UploadStage::process(const HostIngressRing::Staged& staged) {
   StagedHold hold(*in_, staged.slot, stream_);
 
   if (staged.bytes > input_desc_.bytes()) {
@@ -260,15 +269,16 @@ bool UploadStage::step() {
 
 void UploadStage::start() {
   if (running_.exchange(true)) return;
-  worker_ = std::thread(&UploadStage::run, this);
+  worker_ = std::jthread([this](std::stop_token stoken) { run(std::move(stoken)); });
 }
 
 void UploadStage::stop() {
-  if (!running_.exchange(false)) return;
+  running_.store(false, std::memory_order_relaxed);
+  worker_.request_stop();
   if (worker_.joinable()) worker_.join();
 }
 
-void UploadStage::run() {
+void UploadStage::run(std::stop_token stoken) {
   // Per-thread state, so the worker has to set it for itself.
   try {
     cuda_error_check(cudaSetDevice(config_.device_id), "UploadStage: cudaSetDevice");
@@ -278,9 +288,9 @@ void UploadStage::run() {
     return;
   }
 
-  while (running_.load(std::memory_order_relaxed)) {
+  while (!stoken.stop_requested() && running_.load(std::memory_order_relaxed)) {
     try {
-      step();
+      if (!step_blocking(stoken) && !in_->running()) break;
     } catch (const std::exception& e) {
       // One bad frame should not take the pipeline down, but a persistent
       // fault would otherwise spin silently, so it is counted as well as
@@ -289,6 +299,8 @@ void UploadStage::run() {
       std::fprintf(stderr, "upload stage: %s\n", e.what());
     }
   }
+
+  running_.store(false, std::memory_order_relaxed);
 }
 
 }  // namespace perception

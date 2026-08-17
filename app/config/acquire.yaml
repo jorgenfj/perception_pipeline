@@ -94,7 +94,6 @@ display:
 
 upload:
   scratch_slots: 4
-  pop_timeout_ms: 100
   # Needs a transform and RoundRobin; the upload-only path has nothing to
   # capture beyond a single memcpy.
   use_graph: false

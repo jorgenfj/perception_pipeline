@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <stop_token>
 #include <thread>
 #include <vector>
 
@@ -32,10 +33,11 @@ class UploadStage {
  public:
   struct Config {
     uint32_t scratch_slots = 4;
-    std::chrono::milliseconds pop_timeout{100};
     int device_id = 0;
     bool use_graph = false;
   };
+
+  static constexpr std::chrono::milliseconds kDefaultPopTimeout{100};
 
   // `in`, `out` and `transform` must all outlive the stage. `out` must already
   // be sized for what the transform produces; the constructor checks and throws
@@ -83,13 +85,13 @@ class UploadStage {
   uint64_t graph_fallbacks() const { return graph_fallbacks_.load(std::memory_order_relaxed); }
 
   // Take one staged frame through the four steps above. False if none arrived
-  // within pop_timeout, or the ring stopped.
+  // within `timeout`, or the ring stopped.
   //
   // Public so the stage can also be driven inline, without the worker, by a
   // producer that is already host-pinned and has nothing to overlap. Do not mix
   // the two -- either call step() yourself or call start(), never both, since
   // the stream and scratch ring are single-consumer.
-  bool step();
+  bool step(std::chrono::milliseconds timeout = kDefaultPopTimeout);
 
   void start();
   void stop();
@@ -105,8 +107,14 @@ class UploadStage {
   UploadStage(HostIngressRing& in, DeviceRingBuffer& out, DeviceTransform* transform,
               const ImageDesc& input_desc, Config config);
 
-  void run();
+  void run(std::stop_token stoken);
   void release() noexcept;
+
+  // step waiting for the token
+  bool step_blocking(std::stop_token stoken);
+
+  // Everything after the pop, shared by both step() forms.
+  bool process(const HostIngressRing::Staged& staged);
 
   // Capture one graph per output slot, each baking that slot's pointer triple.
   void capture_graphs();
@@ -130,7 +138,7 @@ class UploadStage {
   // scratch index is derived from that same slot, for the same reason.
   std::vector<cudaGraphExec_t> graph_exec_;
 
-  std::thread worker_;
+  std::jthread worker_;
   std::atomic<bool> running_{false};
   std::atomic<uint64_t> uploaded_{0};
   std::atomic<uint64_t> failed_{0};

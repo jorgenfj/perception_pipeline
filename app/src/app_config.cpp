@@ -82,12 +82,6 @@ AppConfig load_app_config(const std::string& path) {
   if (const YAML::Node upload = root["upload"]) {
     read(upload, "scratch_slots", "upload", config.upload.scratch_slots);
     read(upload, "use_graph", "upload", config.upload.use_graph);
-
-    if (upload["pop_timeout_ms"]) {
-      config.upload.pop_timeout =
-          std::chrono::milliseconds(require<int64_t>(upload["pop_timeout_ms"],
-                                                     "upload.pop_timeout_ms"));
-    }
   }
 
   if (const YAML::Node display = root["display"]) {

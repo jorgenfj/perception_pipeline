@@ -161,11 +161,7 @@ bool HostIngressRing::slot_consumed(uint32_t slot) {
   return true;
 }
 
-bool HostIngressRing::pop(Staged& out, std::chrono::milliseconds timeout) {
-  std::unique_lock<std::mutex> lock(mutex_);
-  if (!frame_ready_.wait_for(lock, timeout, [this] { return !running_ || !ready_.empty(); })) {
-    return false;
-  }
+bool HostIngressRing::take_ready(Staged& out) {
   if (!running_ || ready_.empty()) return false;
 
   const uint32_t slot = ready_.front();
@@ -176,6 +172,23 @@ bool HostIngressRing::pop(Staged& out, std::chrono::milliseconds timeout) {
   out.bytes = bytes_[slot];
   out.timestamp_ns = timestamp_ns_[slot];
   return true;
+}
+
+bool HostIngressRing::pop(Staged& out, std::chrono::milliseconds timeout) {
+  std::unique_lock<std::mutex> lock(mutex_);
+  if (!frame_ready_.wait_for(lock, timeout, [this] { return !running_ || !ready_.empty(); })) {
+    return false;
+  }
+  return take_ready(out);
+}
+
+bool HostIngressRing::pop(Staged& out, std::stop_token stoken) {
+  std::unique_lock<std::mutex> lock(mutex_);
+  if (!frame_ready_.wait(lock, std::move(stoken),
+                         [this] { return !running_ || !ready_.empty(); })) {
+    return false;
+  }
+  return take_ready(out);
 }
 
 void HostIngressRing::release(uint32_t slot, cudaStream_t stream) {
