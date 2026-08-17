@@ -23,12 +23,19 @@ target_link_libraries(acquire PRIVATE perception_core perception_spinnaker yaml-
 # builds on the Jetson but not inside a plain CUDA container without one. The
 # option lets that build turn it off rather than fail.
 if(PERCEPTION_WITH_DISPLAY)
-  target_sources(acquire PRIVATE src/gl_viewer.cpp)
+  # viewer_consumer.cpp is the display half of the pair; the headless build
+  # links viewer_consumer_null.cpp instead, which is what keeps acquire_main
+  # free of display #ifdefs rather than branching around the viewer.
+  target_sources(acquire PRIVATE src/gl_viewer.cpp src/viewer_consumer.cpp)
   target_compile_definitions(acquire PRIVATE PERCEPTION_WITH_DISPLAY)
   # OpenGL::GL rather than the legacy variable: on Jetson the GLVND libGL is
   # what the NVIDIA driver installs, and the old FindOpenGL path picks the
   # wrong one.
   target_link_libraries(acquire PRIVATE glfw OpenGL::GL CUDA::cudart)
+else()
+  # Same interface, nothing behind it -- so nothing above the viewer has to
+  # know which build this is.
+  target_sources(acquire PRIVATE src/viewer_consumer_null.cpp)
 endif()
 
 # Next to the binary, so the default relative config path resolves when it is

@@ -1,12 +1,3 @@
-// Ingress driver: one camera -> pinned ring (as the camera's own buffers) ->
-// UploadStage (H2D + debayer) -> device ring, with a local GL viewer leasing
-// frames off the ring for latency inspection.
-//
-//   acquire [config.yaml]
-//
-// This is the composition root: spinnaker/ and pipeline/ know nothing about
-// each other, and everything that joins them lives here.
-
 #include <Spinnaker.h>
 #include <cuda_runtime.h>
 #include <pthread.h>
@@ -30,10 +21,7 @@
 #include "spinnaker_source.hpp"
 #include "transforms/debayer.hpp"
 #include "upload_stage.hpp"
-
-#ifdef PERCEPTION_WITH_DISPLAY
-#include "gl_viewer.hpp"
-#endif
+#include "viewer_consumer.hpp"
 
 namespace {
 
@@ -41,13 +29,12 @@ std::atomic<bool> g_stop{false};
 sigset_t stop_signals;
 
 constexpr const char* kDefaultConfig = "config/acquire.yaml";
-constexpr double kViewerPollSeconds = 0.005;
+
+constexpr uint32_t kPipelineConsumerId = 0;
+constexpr uint32_t kViewerConsumerId = 1;
 
 using perception::cuda_error_check;
 
-// Latency over one reporting interval. Min and max earn their place over a
-// plain mean: the mean hides exactly the tail that matters when the question is
-// whether a ring is deep enough.
 struct LatencyWindow {
   double min_ms = 1e30;
   double max_ms = -1e30;
@@ -122,106 +109,13 @@ int main(int argc, char** argv) {
       device_ring.wake_all();
     });
 
-    // Set by the viewer thread when the window is closed, so main leaves too.
-    std::atomic<bool> viewer_closed{false};
-
-#ifdef PERCEPTION_WITH_DISPLAY
-    // The viewer is a second, independent consumer of the ring rather than
-    // something main hands frames to: the ring is already multi-consumer, and
-    // that keeps the debug window off the pipeline's critical path entirely --
-    // it leases on its own id and its own stream, and if it falls behind it
-    // simply misses frames.
-    //
-    // It owns the window end to end. Everything GL has to happen on the thread
-    // that created the context, so the GlViewer is constructed, pumped, drawn
-    // with, and destroyed here and nowhere else.
-    std::thread viewer_thread;
-    if (config.display.enable) {
-      viewer_thread = std::thread([&] {
-        perception::GlViewer::Config view_config;
-        view_config.window_width = config.display.window_width;
-        view_config.window_height = config.display.window_height;
-        view_config.vsync = config.display.vsync;
-        view_config.latency_scale_ms = config.display.latency_scale_ms;
-
-        std::unique_ptr<perception::GlViewer> viewer;
-        try {
-          viewer = std::make_unique<perception::GlViewer>(display_desc, view_config);
-          std::printf("display: %ux%u vsync=%s scale=%.0fms (esc/q to quit)\n",
-                      config.display.window_width, config.display.window_height,
-                      config.display.vsync ? "on" : "off", config.display.latency_scale_ms);
-        } catch (const std::exception& e) {
-          // Not fatal: the pipeline is the point, the window is an inspector.
-          std::printf("display: disabled (%s)\n", e.what());
-          return;
-        }
-
-        // Per-thread CUDA state, like every other worker sets for itself.
-        if (cudaSetDevice(config.pipeline.device_id) != cudaSuccess) {
-          std::printf("display: disabled (cudaSetDevice failed on the viewer thread)\n");
-          return;
-        }
-        perception::CudaStream view_stream;
-        uint32_t view_slot = ~0u;
-        uint64_t view_seq = ~0ull;
-
-        try {
-          // viewer_closed is also an inbound signal: main sets it when it is
-          // tearing down, which is how this thread learns to leave on the paths
-          // where the window itself was never closed.
-          while (!g_stop.load(std::memory_order_relaxed) &&
-                 !viewer_closed.load(std::memory_order_relaxed)) {
-            // Blocks on the display connection, so an idle window costs
-            // nothing. The ring is checked afterwards on the same tick.
-            viewer->poll_wait(kViewerPollSeconds);
-            if (viewer->should_close()) break;
-
-            perception::FramePeek peek;
-            if (!device_ring.view_latest_inplace(peek) ||
-                (peek.slot == view_slot && peek.slot_seq == view_seq)) {
-              continue;
-            }
-
-            perception::ReadLease lease = device_ring.lease_latest(1, view_stream);
-            if (!lease.valid()) continue;
-            view_slot = lease.slot();
-            view_seq = lease.seq();
-
-            cuda_error_check(cudaStreamWaitEvent(view_stream, lease.data_ready_event(), 0),
-                             "cudaStreamWaitEvent(viewer)");
-
-            double latency_ms = -1.0;
-            int64_t age_ns = 0;
-            if (probe.age_ns(lease.timestamp_ns(), age_ns)) {
-              latency_ms = static_cast<double>(age_ns) * 1e-6;
-            }
-
-            viewer->present(lease.data(), view_stream, latency_ms);
-
-            if (viewer->presented() % 60 == 0) {
-              std::printf("display: presented=%lu present %.2f ms\n", viewer->presented(),
-                          viewer->last_present_ms());
-            }
-          }
-        } catch (const std::exception& e) {
-          std::printf("display: stopped (%s)\n", e.what());
-        }
-
-        // Whichever way the loop ended, main is waiting on the ring and has to
-        // be told the window is gone.
-        viewer_closed.store(true, std::memory_order_relaxed);
-        device_ring.wake_all();
-        cudaStreamSynchronize(view_stream);
-      });
-    }
-#endif
+    perception::ViewerConsumer viewer(device_ring, probe, display_desc, config.display,
+                                      kViewerConsumerId, config.pipeline.device_id);
+    viewer.start();
 
     auto stop_helpers = [&] {
-      viewer_closed.store(true, std::memory_order_relaxed);
+      viewer.stop();
       device_ring.wake_all();
-#ifdef PERCEPTION_WITH_DISPLAY
-      if (viewer_thread.joinable()) viewer_thread.join();
-#endif
       if (signal_relay.joinable()) {
         pthread_kill(signal_relay.native_handle(), SIGINT);
         signal_relay.join();
@@ -238,8 +132,7 @@ int main(int argc, char** argv) {
       source.start(sink);
       upload.start();
 
-      while (!g_stop.load(std::memory_order_relaxed) &&
-                 !viewer_closed.load(std::memory_order_relaxed)) {
+      while (!g_stop.load(std::memory_order_relaxed) && !viewer.closed()) {
         const uint64_t seen = device_ring.wait_seq();
 
         perception::FramePeek peek;
@@ -249,7 +142,7 @@ int main(int argc, char** argv) {
           continue;
         }
 
-        perception::ReadLease lease = device_ring.lease_latest(0, consumer);
+        perception::ReadLease lease = device_ring.lease_latest(kPipelineConsumerId, consumer);
         if (!lease.valid()) continue;
         last_slot = lease.slot();
         last_seq = lease.seq();
@@ -265,8 +158,6 @@ int main(int argc, char** argv) {
           latency_ms = static_cast<double>(age_ns) * 1e-6;
           latency.add(latency_ms);
         }
-
-        (void)latency_ms;
 
         ++consumed;
 
