@@ -120,11 +120,17 @@ int main(int argc, char** argv) {
                 display_desc.width, display_desc.height, display_desc.stride_bytes,
                 display_desc.bytes());
 
+    perception::DeviceRingTextureDesc display_texture;
+    display_texture.width = display_desc.width;
+    display_texture.height = display_desc.height;
+    display_texture.pitch_bytes = display_desc.stride_bytes;
+
     perception::DeviceRingBuffer device_ring(
         config.pipeline.device_depth, display_desc.bytes(), config.pipeline.reuse_wait,
-        config.pipeline.write_policy, config.pipeline.max_consumers, config.pipeline.device_id);
+        config.pipeline.write_policy, config.pipeline.max_consumers, config.pipeline.device_id,
+        display_texture);
     g_ring.store(&device_ring, std::memory_order_release);
-    
+
     struct RingUnregister {
       std::thread& t;
       ~RingUnregister() {

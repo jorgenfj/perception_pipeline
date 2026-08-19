@@ -1,5 +1,6 @@
 #include "device_ring_buffer.hpp"
 
+#include <cstdint>
 #include <cstdio>
 #include <stdexcept>
 #include <string>
@@ -7,11 +8,43 @@
 #include "cuda_util.hpp"
 
 namespace perception {
+namespace {
+
+void validate_texture_desc(const DeviceRingTextureDesc& texture, std::size_t slot_bytes,
+                           int device_id, cudaDeviceProp& prop) {
+  if (texture.height == 0 || texture.pitch_bytes == 0) {
+    throw std::runtime_error(
+        "DeviceRingBuffer: texture.width is set but height/pitch_bytes are zero");
+  }
+  if (static_cast<std::size_t>(texture.pitch_bytes) * texture.height != slot_bytes) {
+    throw std::runtime_error(
+        "DeviceRingBuffer: texture pitch_bytes * height does not equal slot_bytes -- "
+        "the descriptor must describe the same layout the slots were sized for");
+  }
+
+  cuda_error_check(cudaGetDeviceProperties(&prop, device_id), "cudaGetDeviceProperties");
+
+  if (texture.pitch_bytes % static_cast<uint32_t>(prop.texturePitchAlignment) != 0) {
+    throw std::runtime_error(
+        "DeviceRingBuffer: texture.pitch_bytes is not a multiple of this device's "
+        "texturePitchAlignment (" +
+        std::to_string(prop.texturePitchAlignment) + " bytes)");
+  }
+  if (texture.width > static_cast<uint32_t>(prop.maxTexture2DLinear[0]) ||
+      texture.height > static_cast<uint32_t>(prop.maxTexture2DLinear[1]) ||
+      texture.pitch_bytes > static_cast<uint32_t>(prop.maxTexture2DLinear[2])) {
+    throw std::runtime_error(
+        "DeviceRingBuffer: texture dimensions exceed this device's maxTexture2DLinear");
+  }
+}
+
+}  // namespace
 
 DeviceRingBuffer::DeviceRingBuffer(uint32_t slot_count, std::size_t slot_bytes,
                                    ReuseWait reuse_wait,
                                    WritePolicy write_policy,
-                                   uint32_t max_consumers, int device_id)
+                                   uint32_t max_consumers, int device_id,
+                                   DeviceRingTextureDesc texture)
     : reuse_wait_(reuse_wait), write_policy_(write_policy),
       max_consumers_(max_consumers), slot_bytes_(slot_bytes),
       buffers_(slot_count, nullptr), data_ready_event_(slot_count, nullptr),
@@ -25,6 +58,10 @@ DeviceRingBuffer::DeviceRingBuffer(uint32_t slot_count, std::size_t slot_bytes,
   if (max_consumers == 0) {
     throw std::runtime_error(
         "DeviceRingBuffer: needs room for at least one consumer");
+  }
+  cudaDeviceProp texture_prop{};
+  if (texture.width != 0) {
+    validate_texture_desc(texture, slot_bytes, device_id, texture_prop);
   }
 
   cuda_error_check(cudaSetDevice(device_id), "cudaSetDevice");
@@ -42,6 +79,38 @@ DeviceRingBuffer::DeviceRingBuffer(uint32_t slot_count, std::size_t slot_bytes,
             "cudaEventCreateWithFlags");
       }
     }
+
+    if (texture.width != 0) {
+      cudaResourceDesc res_desc{};
+      res_desc.resType = cudaResourceTypePitch2D;
+      res_desc.res.pitch2D.desc = cudaCreateChannelDesc<uchar4>();
+      res_desc.res.pitch2D.width = texture.width;
+      res_desc.res.pitch2D.height = texture.height;
+      res_desc.res.pitch2D.pitchInBytes = texture.pitch_bytes;
+
+      cudaTextureDesc tex_desc{};
+      tex_desc.addressMode[0] = texture.address_mode;
+      tex_desc.addressMode[1] = texture.address_mode;
+      tex_desc.filterMode = texture.filter_mode;
+      tex_desc.readMode = texture.read_mode;
+      tex_desc.normalizedCoords = texture.normalized_coords;
+
+      textures_.assign(slot_count, cudaTextureObject_t{0});
+      for (uint32_t i = 0; i < slot_count; ++i) {
+        if (reinterpret_cast<std::uintptr_t>(buffers_[i]) %
+                static_cast<std::uintptr_t>(texture_prop.textureAlignment) !=
+            0) {
+          throw std::runtime_error(
+              "DeviceRingBuffer: slot " + std::to_string(i) +
+              "'s device pointer is not aligned to textureAlignment -- unexpected for a "
+              "cudaMalloc allocation on this device/driver");
+        }
+        res_desc.res.pitch2D.devPtr = buffers_[i];
+        cuda_error_check(
+            cudaCreateTextureObject(&textures_[i], &res_desc, &tex_desc, nullptr),
+            "cudaCreateTextureObject");
+      }
+    }
   } catch (...) {
     cleanup();
     throw;
@@ -55,6 +124,12 @@ void DeviceRingBuffer::cleanup() noexcept {
     if (read_done_event_[i]) {
       cudaEventDestroy(read_done_event_[i]);
       read_done_event_[i] = nullptr;
+    }
+  }
+  for (std::size_t i = 0; i < textures_.size(); ++i) {
+    if (textures_[i]) {
+      cudaDestroyTextureObject(textures_[i]);
+      textures_[i] = 0;
     }
   }
   for (std::size_t i = 0; i < buffers_.size(); ++i) {
@@ -214,7 +289,7 @@ ReadLease DeviceRingBuffer::lease_latest(uint32_t consumer_id,
 
     return ReadLease(this, slot, seq, consumer_id, stream,
                      timestamp_ns_[slot].load(std::memory_order_relaxed),
-                     buffers_[slot], data_ready_event_[slot]);
+                     buffers_[slot], data_ready_event_[slot], texture_at_slot(slot));
   }
   return {};
 }
@@ -272,7 +347,8 @@ ReadLease DeviceRingBuffer::lease_by_timestamp(
 
     return ReadLease(this, best_slot, best_seq, consumer_id, stream,
                      timestamp_ns_[best_slot].load(std::memory_order_relaxed),
-                     buffers_[best_slot], data_ready_event_[best_slot]);
+                     buffers_[best_slot], data_ready_event_[best_slot],
+                     texture_at_slot(best_slot));
   }
   return {};
 }

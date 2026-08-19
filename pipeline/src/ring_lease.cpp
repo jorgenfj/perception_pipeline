@@ -26,7 +26,8 @@ ReadLease::ReadLease(ReadLease&& other) noexcept
       stream_(other.stream_),
       timestamp_ns_(other.timestamp_ns_),
       data_(other.data_),
-      data_ready_event_(other.data_ready_event_) {
+      data_ready_event_(other.data_ready_event_),
+      texture_(other.texture_) {
   other.ring_ = nullptr;
 }
 
@@ -47,6 +48,7 @@ ReadLease& ReadLease::operator=(ReadLease&& other) noexcept {
     timestamp_ns_ = other.timestamp_ns_;
     data_ = other.data_;
     data_ready_event_ = other.data_ready_event_;
+    texture_ = other.texture_;
     other.ring_ = nullptr;
   }
   return *this;

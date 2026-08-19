@@ -1,0 +1,64 @@
+# Camera config for `spin_acquire`, the standalone driver. Only the `camera:`
+# and `standalone:` sections are read here. The pipeline app reads `camera:`
+# from this same schema and adds its own sections alongside it, so one file can
+# serve both if you want it to.
+
+camera:
+  # Empty picks the first camera found. Set it once there is more than one rig.
+  serial: ""
+  timeout_ms: 1000
+
+  # GenICam nodes on the camera node map, applied in this order before
+  # acquisition starts. Order matters: ExposureAuto has to be Off before
+  # ExposureTime is writable, and geometry has to be set before PayloadSize
+  # (and therefore the buffer size) means anything.
+  #
+  # The sequence form below fixes the order explicitly. A plain map works too
+  # and reads better, but leans on yaml-cpp preserving document order.
+  features:
+    - AcquisitionMode: Continuous
+    - TriggerMode: "Off"
+
+    - PixelFormat: BayerRG8
+    - Width: 1440
+    - Height: 1080
+    - OffsetX: 0
+    - OffsetY: 0
+
+    - ExposureAuto: "Off"
+    - ExposureTime: 8000.0     # microseconds
+
+    - GainAuto: "Off"
+    - Gain: 0.0
+
+    - AcquisitionFrameRateEnable: true
+    - AcquisitionFrameRate: 60.0
+
+    # GigE link tuning. Jumbo frames need the NIC MTU raised to match, and the
+    # throughput limit is what stops the camera outrunning the link.
+    # - GevSCPSPacketSize: 9000
+    # - GevSCPD: 4000
+    # - DeviceLinkThroughputLimit: 85000000
+
+    # PTP slave sync -- no-op unless a PTP master (the Jetson, see
+    # spinnaker/README.md) is actually reachable; the camera just sits in
+    # GevIEEE1588Status=Listening otherwise and free-runs as before.
+    - GevIEEE1588: "true"
+
+  # The same, against the transport-layer stream node map.
+  #
+  # NewestOnly is latest-wins at the driver: the default queues stale frames, so
+  # any hiccup leaves a consumer chewing through a backlog instead of dropping
+  # it. It costs a third buffer -- the overwrite modes keep one in hand to swap.
+  #
+  # StreamBufferCountMode is forced to Manual by the source and cannot be set
+  # here: on Auto the engine sizes its own pool and ignores the user buffers,
+  # which silently drops the zero-copy path.
+  stream_features:
+    - StreamBufferHandlingMode: NewestOnly
+
+# Read only by spin_acquire. The pipeline app sizes its rings from its own
+# `pipeline:` section instead, and ignores this.
+standalone:
+  buffer_count: 8
+  max_frames: 0     # 0 runs until interrupted

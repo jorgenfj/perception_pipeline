@@ -39,7 +39,7 @@ camera:
 
     # GigE link tuning. Jumbo frames need the NIC MTU raised to match, and the
     # throughput limit is what stops the camera outrunning the link.
-    # - GevSCPSPacketSize: 9000
+    - GevSCPSPacketSize: 9000
     # - GevSCPD: 4000
     # - DeviceLinkThroughputLimit: 85000000
 

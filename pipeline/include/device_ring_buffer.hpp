@@ -22,6 +22,17 @@ enum class WritePolicy {
   ScanForFree,
 };
 
+struct DeviceRingTextureDesc {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t pitch_bytes = 0;
+
+  cudaTextureFilterMode filter_mode = cudaFilterModeLinear;
+  cudaTextureReadMode read_mode = cudaReadModeNormalizedFloat;
+  cudaTextureAddressMode address_mode = cudaAddressModeClamp;
+  bool normalized_coords = true;
+};
+
 class DeviceRingBuffer {
 public:
   static constexpr uint64_t kNoTimestamp = ~0ull;
@@ -29,7 +40,8 @@ public:
   DeviceRingBuffer(uint32_t slot_count, std::size_t slot_bytes,
                    ReuseWait reuse_wait = ReuseWait::HostSync,
                    WritePolicy write_policy = WritePolicy::RoundRobin,
-                   uint32_t max_consumers = 4, int device_id = 0);
+                   uint32_t max_consumers = 4, int device_id = 0,
+                   DeviceRingTextureDesc texture = {});
   ~DeviceRingBuffer();
 
   DeviceRingBuffer(const DeviceRingBuffer &) = delete;
@@ -50,6 +62,10 @@ public:
   WriteLease acquire_write(cudaStream_t stream);
 
   void *data_at_slot(uint32_t slot) { return buffers_[slot]; }
+
+  cudaTextureObject_t texture_at_slot(uint32_t slot) const {
+    return textures_.empty() ? cudaTextureObject_t{0} : textures_[slot];
+  }
 
   // --- consumer ---
 
@@ -104,6 +120,7 @@ private:
   uint32_t max_consumers_;
   std::size_t slot_bytes_;
   std::vector<void *> buffers_;
+  std::vector<cudaTextureObject_t> textures_;
   std::vector<cudaEvent_t> data_ready_event_;
   std::vector<cudaEvent_t> read_done_event_;
   std::vector<std::atomic<uint64_t>> seq_;

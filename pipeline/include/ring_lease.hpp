@@ -30,6 +30,9 @@ class ReadLease {
   const void* data() const { return data_; }
   cudaEvent_t data_ready_event() const { return data_ready_event_; }
 
+  // Texture handle to the same data ptr as data(), 0 if no texture
+  cudaTextureObject_t texture() const { return texture_; }
+
   // Records read completion against the lease's stream and drops the hold. Call
   // it once the reading work is *enqueued* -- there is no need to wait for it.
   void drop_hold();
@@ -38,7 +41,7 @@ class ReadLease {
   friend class DeviceRingBuffer;
   ReadLease(DeviceRingBuffer* ring, uint32_t slot, uint64_t seq, uint32_t consumer_id,
             cudaStream_t stream, uint64_t timestamp_ns, const void* data,
-            cudaEvent_t data_ready_event)
+            cudaEvent_t data_ready_event, cudaTextureObject_t texture)
       : ring_(ring),
         slot_(slot),
         seq_(seq),
@@ -46,7 +49,8 @@ class ReadLease {
         stream_(stream),
         timestamp_ns_(timestamp_ns),
         data_(data),
-        data_ready_event_(data_ready_event) {}
+        data_ready_event_(data_ready_event),
+        texture_(texture) {}
 
   DeviceRingBuffer* ring_ = nullptr;
   uint32_t slot_ = 0;
@@ -56,6 +60,7 @@ class ReadLease {
   uint64_t timestamp_ns_ = 0;
   const void* data_ = nullptr;
   cudaEvent_t data_ready_event_ = nullptr;
+  cudaTextureObject_t texture_ = 0;
 };
 
 // A held write slot. The slot's seq is odd for the lease's lifetime, so no
