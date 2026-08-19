@@ -4,6 +4,7 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -27,6 +28,52 @@ using namespace Spinnaker::GenApi;
 // USB3 packet size. Buffers not rounded up to it tear on USB3 cameras; on GigE
 // it is harmless padding.
 constexpr std::size_t kUsbPacketSize = 1024;
+
+// Spinnaker::ImageStatus ranges -1 (UNKNOWN_ERROR) .. 14
+// (GENDC_PART_DATA_INVALID); +1 maps it into a dense 0-based index.
+std::size_t incompleteStatusIndex(Spinnaker::ImageStatus status) {
+  return static_cast<std::size_t>(static_cast<int>(status) + 1);
+}
+
+// Short, greppable names -- what actually distinguishes real network packet
+// loss from a CRC failure or a host-side resource problem. See
+// https://www.teledynevisionsolutions.com/support/support-center/troubleshooting/iis/troubleshooting-image-consistency-errors/
+const char* incompleteStatusName(Spinnaker::ImageStatus status) {
+  switch (status) {
+    case Spinnaker::SPINNAKER_IMAGE_STATUS_CRC_CHECK_FAILED:
+      return "crc";
+    case Spinnaker::SPINNAKER_IMAGE_STATUS_DATA_OVERFLOW:
+      return "data_overflow";
+    case Spinnaker::SPINNAKER_IMAGE_STATUS_MISSING_PACKETS:
+      return "missing_packets";
+    case Spinnaker::SPINNAKER_IMAGE_STATUS_LEADER_BUFFER_SIZE_INCONSISTENT:
+      return "leader_size_inconsistent";
+    case Spinnaker::SPINNAKER_IMAGE_STATUS_TRAILER_BUFFER_SIZE_INCONSISTENT:
+      return "trailer_size_inconsistent";
+    case Spinnaker::SPINNAKER_IMAGE_STATUS_PACKETID_INCONSISTENT:
+      return "packetid_inconsistent";
+    case Spinnaker::SPINNAKER_IMAGE_STATUS_MISSING_LEADER:
+      return "missing_leader";
+    case Spinnaker::SPINNAKER_IMAGE_STATUS_MISSING_TRAILER:
+      return "missing_trailer";
+    case Spinnaker::SPINNAKER_IMAGE_STATUS_DATA_INCOMPLETE:
+      return "data_incomplete";
+    case Spinnaker::SPINNAKER_IMAGE_STATUS_INFO_INCONSISTENT:
+      return "info_inconsistent";
+    case Spinnaker::SPINNAKER_IMAGE_STATUS_CHUNK_DATA_INVALID:
+      return "chunk_data_invalid";
+    case Spinnaker::SPINNAKER_IMAGE_STATUS_NO_SYSTEM_RESOURCES:
+      return "no_system_resources";
+    case Spinnaker::SPINNAKER_IMAGE_STATUS_GENDC_DATA_INVALID:
+      return "gendc_data_invalid";
+    case Spinnaker::SPINNAKER_IMAGE_STATUS_GENDC_PART_DATA_INVALID:
+      return "gendc_part_data_invalid";
+    case Spinnaker::SPINNAKER_IMAGE_STATUS_NO_ERROR:
+      return "no_error";
+    default:
+      return "unknown_error";
+  }
+}
 
 void selectEnum(INodeMap& nodes, const char* node, const char* entry) {
   const CEnumerationPtr selector = nodes.GetNode(node);
@@ -165,6 +212,34 @@ SpinnakerSource::~SpinnakerSource() {
   if (camera_ && camera_->IsInitialized()) camera_->DeInit();
 }
 
+std::string SpinnakerSource::ptp_status() {
+  INodeMap& nodes = camera_->GetNodeMap();
+  return currentEnum(nodes, "GevIEEE1588Status");
+}
+
+bool SpinnakerSource::ptp_offset_ns(int64_t& out) {
+  INodeMap& nodes = camera_->GetNodeMap();
+  const CIntegerPtr value = nodes.GetNode("GevIEEE1588OffsetFromMaster");
+  if (!IsReadable(value)) return false;
+  out = value->GetValue();
+  return true;
+}
+
+std::string SpinnakerSource::incomplete_breakdown() const {
+  std::ostringstream out;
+  bool first = true;
+  for (int status = -1; status <= 14; ++status) {
+    const uint64_t count = incomplete_by_status_[incompleteStatusIndex(
+                                static_cast<Spinnaker::ImageStatus>(status))]
+                               .load(std::memory_order_relaxed);
+    if (!count) continue;
+    if (!first) out << ' ';
+    first = false;
+    out << incompleteStatusName(static_cast<Spinnaker::ImageStatus>(status)) << '=' << count;
+  }
+  return out.str();
+}
+
 void SpinnakerSource::bind_buffers(FrameSink& sink) {
   if (sink.slot_bytes() < geometry_.buffer_bytes) {
     throw std::runtime_error("SpinnakerSource: sink slots are smaller than buffer_bytes");
@@ -269,7 +344,14 @@ void SpinnakerSource::run(FrameSink& sink) {
       Spinnaker::ImagePtr image = camera_->GetNextImage(config_.timeout_ms);
 
       if (image->IsIncomplete()) {
+        const Spinnaker::ImageStatus status = image->GetImageStatus();
         incomplete_.fetch_add(1, std::memory_order_relaxed);
+        incomplete_by_status_[incompleteStatusIndex(status)].fetch_add(
+            1, std::memory_order_relaxed);
+        trace_pool("incomplete frame: status=%s (%d) frame_id=%llu held=%u/%zu\n",
+                   incompleteStatusName(status), static_cast<int>(status),
+                   static_cast<unsigned long long>(image->GetFrameID()),
+                   held_now_.load(std::memory_order_relaxed), held_.size());
         image->Release();
         continue;
       }

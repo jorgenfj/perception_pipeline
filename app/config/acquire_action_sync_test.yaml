@@ -1,0 +1,102 @@
+# Verifies GigE Vision Scheduled Action Commands: schedules one
+# Action0-triggered AcquisitionStart aligned to a future whole second, then
+# checks the first `action_sync.check_frames` delivered timestamps against
+# that schedule. See spinnaker/README.md.
+#
+# Same schema as acquire.yaml plus the `action_sync:` section below -- diff
+# against acquire.yaml if this drifts, the two should otherwise match.
+#
+# Requires GevIEEE1588 to already be locked (`ptp: status=Slave` at startup);
+# a scheduled action on an unsynced camera comes back
+# SPINNAKER_ACTION_COMMAND_STATUS_NO_REF_TIME. Bring up ptp4l/phc2sys first
+# per spinnaker/README.md.
+
+camera:
+  serial: ""
+  timeout_ms: 1000
+
+  features:
+    - AcquisitionMode: Continuous
+
+    # TriggerSource can't be changed while TriggerMode is On on most GenICam
+    # devices, hence Off, then set the source, then arm it -- the sequence
+    # form here (not a plain map) is what makes that ordering explicit.
+    - TriggerSelector: AcquisitionStart
+    - TriggerMode: "Off"
+    - TriggerSource: Action0
+    - TriggerMode: "On"
+
+    - PixelFormat: BayerRG8
+    - Width: 1440
+    - Height: 1080
+    - OffsetX: 0
+    - OffsetY: 0
+
+    - ExposureAuto: "Off"
+    - ExposureTime: 8000.0     # microseconds
+
+    - GainAuto: "Off"
+    - Gain: 0.0
+
+    - AcquisitionFrameRateEnable: true
+    - AcquisitionFrameRate: 7.5   # keep in sync with action_sync.expected_hz below
+
+    # GigE link tuning. Jumbo frames need the NIC MTU raised to match, and the
+    # throughput limit is what stops the camera outrunning the link.
+    # - GevSCPSPacketSize: 9000
+    # - GevSCPD: 4000
+    # - DeviceLinkThroughputLimit: 85000000
+
+    - GevIEEE1588: "true"
+
+    # Must match action_sync.device_key/group_key/group_mask below -- these
+    # are what the camera checks an incoming Action Command against before
+    # asserting the signal.
+    - ActionDeviceKey: 1
+    - ActionGroupKey: 1
+    - ActionGroupMask: 1
+
+  stream_features:
+    - StreamBufferHandlingMode: NewestOnly
+
+pipeline:
+  ingress_depth: 8
+  device_depth: 4
+  max_consumers: 2
+  device_id: 0
+  reuse_wait: DeviceWait
+  write_policy: RoundRobin
+
+display:
+  enable: true
+  window_width: 1440
+  window_height: 1080
+  vsync: false
+  latency_scale_ms: 100.0
+
+upload:
+  scratch_slots: 4
+  use_graph: false
+
+# Read only when this section is present. acquire schedules one Action
+# Command for AcquisitionStart at the next whole second (plus lead_time_ms of
+# margin so it clears the network and the camera's action queue before the
+# deadline), then validates the first check_frames timestamps: the first
+# frame's proximity to the scheduled instant, and frame-to-frame spacing
+# against 1/expected_hz.
+action_sync:
+  device_key: 1
+  group_key: 1
+  group_mask: 1
+  expected_hz: 7.5
+  lead_time_ms: 500.0
+  check_frames: 60
+  tolerance_ms: 2.0
+
+  # Measured on this camera: start offset came back ~7.99ms against an
+  # ExposureTime of 8000us (8ms) -- this sensor's GetTimeStamp() latches at
+  # end-of-exposure, not at the trigger instant. That's a fixed sensor
+  # convention, not sync error, so it's subtracted out here rather than
+  # inflating tolerance_ms to hide it. Re-measure and update this if
+  # ExposureTime above changes, or if you swap to a different camera model.
+  expected_start_offset_ms: 8.0

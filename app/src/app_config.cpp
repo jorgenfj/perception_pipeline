@@ -92,6 +92,19 @@ AppConfig load_app_config(const std::string& path) {
     read(display, "latency_scale_ms", "display", config.display.latency_scale_ms);
   }
 
+  if (const YAML::Node action_sync = root["action_sync"]) {
+    config.action_sync.enabled = true;
+    read(action_sync, "device_key", "action_sync", config.action_sync.device_key);
+    read(action_sync, "group_key", "action_sync", config.action_sync.group_key);
+    read(action_sync, "group_mask", "action_sync", config.action_sync.group_mask);
+    read(action_sync, "expected_hz", "action_sync", config.action_sync.expected_hz);
+    read(action_sync, "lead_time_ms", "action_sync", config.action_sync.lead_time_ms);
+    read(action_sync, "check_frames", "action_sync", config.action_sync.check_frames);
+    read(action_sync, "tolerance_ms", "action_sync", config.action_sync.tolerance_ms);
+    read(action_sync, "expected_start_offset_ms", "action_sync",
+         config.action_sync.expected_start_offset_ms);
+  }
+
   // The upload stage allocates on this device, so it has to be the one the
   // rings were built on.
   config.upload.device_id = config.pipeline.device_id;

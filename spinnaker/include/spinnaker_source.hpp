@@ -2,6 +2,7 @@
 
 #include <Spinnaker.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -42,6 +43,13 @@ class SpinnakerSource {
 
   const CameraGeometry& geometry() const { return geometry_; }
 
+  // Breakdown of incomplete() by Spinnaker::ImageStatus, e.g.
+  // "missing_packets=520 data_incomplete=40 crc=8" -- empty if incomplete() is
+  // zero. This is what actually distinguishes network packet loss
+  // (missing_packets, needs jumbo frames / packet delay tuning) from a real
+  // CRC failure or a host-side resource problem.
+  std::string incomplete_breakdown() const;
+
   // Minimum slot count the configured stream mode accepts as user buffers.
   uint32_t min_slot_count() const { return min_slots_; }
 
@@ -50,6 +58,17 @@ class SpinnakerSource {
   // acquiring.
   void start(FrameSink& sink);
   void stop();
+
+  // GevIEEE1588Status off the node map ("Slave" once locked to a master), or
+  // "" if this camera doesn't expose PTP at all. A live GVCP register read,
+  // not cached -- call sparingly (a startup check, or every N frames), not
+  // per-frame.
+  std::string ptp_status();
+
+  // GevIEEE1588OffsetFromMaster in nanoseconds. Only meaningful once
+  // ptp_status() == "Slave"; false if the node isn't readable (including:
+  // camera has no PTP support at all).
+  bool ptp_offset_ns(int64_t& out);
 
   uint64_t delivered() const { return delivered_.load(std::memory_order_relaxed); }
   uint64_t incomplete() const { return incomplete_.load(std::memory_order_relaxed); }
@@ -106,6 +125,7 @@ class SpinnakerSource {
   std::atomic<bool> running_{false};
   std::atomic<uint64_t> delivered_{0};
   std::atomic<uint64_t> incomplete_{0};
+  std::array<std::atomic<uint64_t>, 16> incomplete_by_status_{};
   std::atomic<uint64_t> foreign_{0};
   std::atomic<uint64_t> timeouts_{0};
 

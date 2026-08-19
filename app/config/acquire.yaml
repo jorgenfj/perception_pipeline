@@ -43,6 +43,11 @@ camera:
     # - GevSCPD: 4000
     # - DeviceLinkThroughputLimit: 85000000
 
+    # PTP slave sync -- no-op unless a PTP master (the Jetson, see
+    # spinnaker/README.md) is actually reachable; the camera just sits in
+    # GevIEEE1588Status=Listening otherwise and free-runs as before.
+    - GevIEEE1588: "true"
+
   # The same, against the transport-layer stream node map.
   #
   # NewestOnly is latest-wins at the driver, matching the rings: the default

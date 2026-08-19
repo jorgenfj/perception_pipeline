@@ -9,7 +9,9 @@ find_package(yaml-cpp REQUIRED)
 
 add_executable(acquire
   src/acquire_main.cpp
-  src/app_config.cpp)
+  src/action_sync.cpp
+  src/app_config.cpp
+  src/report.cpp)
 
 target_include_directories(acquire PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
@@ -39,8 +41,11 @@ else()
 endif()
 
 # Next to the binary, so the default relative config path resolves when it is
-# run straight out of the build tree.
+# run straight out of the build tree. Symlinked rather than copied so yaml
+# edits take effect immediately without a rebuild.
 add_custom_command(TARGET acquire POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
+  COMMAND ${CMAKE_COMMAND} -E rm -rf
+          "$<TARGET_FILE_DIR:acquire>/config"
+  COMMAND ${CMAKE_COMMAND} -E create_symlink
           "${CMAKE_CURRENT_SOURCE_DIR}/config"
           "$<TARGET_FILE_DIR:acquire>/config")

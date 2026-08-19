@@ -13,6 +13,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 
@@ -25,14 +26,22 @@ namespace {
 volatile std::sig_atomic_t g_stop = 0;
 void onSignal(int) { g_stop = 1; }
 
-constexpr const char* kDefaultConfig = "config/camera.yaml";
+// Resolved against the binary's own directory, not the caller's cwd -- see
+// the matching helper in app/src/acquire_main.cpp for why.
+std::string default_config_path() {
+  std::error_code ec;
+  const std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+  const std::filesystem::path base =
+      ec ? std::filesystem::current_path() : exe.parent_path();
+  return (base / "config" / "camera.yaml").string();
+}
 
 }  // namespace
 
 int main(int argc, char** argv) {
   std::signal(SIGINT, onSignal);
 
-  const std::string config_path = argc > 1 ? argv[1] : kDefaultConfig;
+  const std::string config_path = argc > 1 ? argv[1] : default_config_path();
 
   Spinnaker::SystemPtr system = Spinnaker::System::GetInstance();
   Spinnaker::CameraList cameras = system->GetCameras();

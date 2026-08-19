@@ -20,8 +20,8 @@ camera:
     - TriggerMode: "Off"
 
     - PixelFormat: BayerRG8
-    - Width: 2048
-    - Height: 1536
+    - Width: 1440
+    - Height: 1080
     - OffsetX: 0
     - OffsetY: 0
 
@@ -39,6 +39,11 @@ camera:
     # - GevSCPSPacketSize: 9000
     # - GevSCPD: 4000
     # - DeviceLinkThroughputLimit: 85000000
+
+    # PTP slave sync -- no-op unless a PTP master (the Jetson, see
+    # spinnaker/README.md) is actually reachable; the camera just sits in
+    # GevIEEE1588Status=Listening otherwise and free-runs as before.
+    - GevIEEE1588: "true"
 
   # The same, against the transport-layer stream node map.
   #
