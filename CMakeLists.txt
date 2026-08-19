@@ -45,6 +45,7 @@ if(PERCEPTION_WITH_DISPLAY)
 endif()
 
 add_subdirectory(pipeline)
+add_subdirectory(processing)
 
 # spinnaker/ builds without CUDA and app/ is what joins the two, so the app
 # only exists when both halves do.

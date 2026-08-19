@@ -6,7 +6,6 @@ add_library(perception_core
   src/ring_lease.cpp
   src/host_ingress_ring.cpp
   src/upload_stage.cpp
-  src/transforms/debayer.cu
   # src/device_transform.cpp
   # src/transform_stage.cpp
   )

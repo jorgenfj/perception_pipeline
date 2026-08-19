@@ -15,7 +15,7 @@ add_executable(acquire
 
 target_include_directories(acquire PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
-target_link_libraries(acquire PRIVATE perception_core perception_spinnaker yaml-cpp)
+target_link_libraries(acquire PRIVATE perception_core perception_processing perception_spinnaker yaml-cpp)
 
 # The viewer is a debug inspector, not part of the pipeline, so it is optional
 # and its absence costs nothing: acquire_main compiles the window out entirely
