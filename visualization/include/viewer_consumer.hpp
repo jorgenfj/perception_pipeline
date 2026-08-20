@@ -4,14 +4,18 @@
 #include <cstdint>
 #include <thread>
 
-#include "app_config.hpp"
 #include "device_ring_buffer.hpp"
+#include "display_config.hpp"
 #include "latency_probe.hpp"
 #include "types.hpp"
 
 namespace perception {
 
-// The local debug window, as a self-contained consumer of the device ring.
+// The local debug window, as a self-contained consumer of the device ring --
+// frames only, nothing drawn on top. For `viewer: yolo` (see
+// app/include/app_config.hpp) see yolo_viewer_consumer.hpp instead; the two
+// do not share a base class, since a shared one would need a boxes-or-not
+// branch inside the one thing this class is meant to keep simple.
 //
 // It is not part of the pipeline. It leases on its own consumer id and its own
 // CUDA stream, so falling behind costs it frames and nothing upstream notices,

@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <stop_token>
 #include <thread>
 #include <vector>
@@ -16,19 +17,6 @@
 namespace perception {
 
 // The host-to-device boundary: pinned ingress ring -> H2D -> device ring.
-// Vendor code stops on one side of it, CUDA starts on the other.
-//
-// The transform is optional, and that choice picks one of two orderings on the
-// stage's single stream:
-//
-//   with a transform          without one
-//   -----------------------   ------------------------
-//   H2D  pinned -> scratch    acquire output slot
-//   release pinned slot       H2D  pinned -> that slot
-//   acquire output slot       release pinned slot
-//   transform scratch->slot   mark_slot_written
-//   mark_slot_written
-//   record scratch_free
 class UploadStage {
  public:
   struct Config {
@@ -118,8 +106,9 @@ class UploadStage {
 
   // Capture one graph per output slot, each baking that slot's pointer triple.
   void capture_graphs();
-  // The shared tail of both paths: enqueue H2D + transform eagerly.
-  void enqueue_eager(const HostIngressRing::Staged& staged, uint32_t scratch, void* dst);
+
+  void enqueue_eager(const HostIngressRing::Staged& staged, uint32_t scratch, void* dst,
+                     const std::function<void()>& release_pinned);
 
   HostIngressRing* in_;
   DeviceRingBuffer* out_;

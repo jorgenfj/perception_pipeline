@@ -5,7 +5,7 @@
 #include <atomic>
 #include <csignal>
 #include <cstdio>
-#include <filesystem>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -19,33 +19,22 @@
 #include "report.hpp"
 #include "ring_frame_sink.hpp"
 #include "spinnaker_source.hpp"
+#include "headless_yolo_consumer.hpp"
 #include "transforms/debayer.hpp"
 #include "upload_stage.hpp"
 #include "viewer_consumer.hpp"
+#include "yolo_viewer_consumer.hpp"
 
 namespace {
 
 std::atomic<bool> g_stop{false};
-// Set once device_ring exists, so the signal thread (armed before it does)
-// has something to wake once there is something worth waking.
 std::atomic<perception::DeviceRingBuffer*> g_ring{nullptr};
 sigset_t stop_signals;
 
 constexpr uint32_t kPipelineConsumerId = 0;
-constexpr uint32_t kViewerConsumerId = 1;
+constexpr uint32_t kSecondaryConsumerId = 1;
 
 using perception::cuda_error_check;
-
-// Resolved against the binary's own directory, not the caller's cwd, so
-// `./build/bin/acquire` works the same from the project root, from
-// build/bin, or anywhere else -- matching where CMake's POST_BUILD step
-// actually links config/ (next to the binary, not next to the source).
-std::string default_config_path() {
-  std::error_code ec;
-  const std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-  const std::filesystem::path base = ec ? std::filesystem::current_path() : exe.parent_path();
-  return (base / "config" / "acquire.yaml").string();
-}
 
 }  // namespace
 
@@ -75,7 +64,7 @@ int main(int argc, char** argv) {
     }
   } signal_relay_guard{signal_relay};
 
-  const std::string config_path = argc > 1 ? argv[1] : default_config_path();
+  const std::string config_path = argc > 1 ? argv[1] : perception::default_config_path();
 
   Spinnaker::SystemPtr system = Spinnaker::System::GetInstance();
   Spinnaker::CameraList cameras = system->GetCameras();
@@ -84,6 +73,7 @@ int main(int argc, char** argv) {
   try {
     const perception::AppConfig config = perception::load_app_config(config_path);
     std::printf("config: %s\n", config_path.c_str());
+    std::printf("viewer: %s\n", perception::to_string(config.viewer_mode));
 
     // ---- camera: pixels land straight in the sink's user buffers ----
     perception::SpinnakerSource source(
@@ -142,18 +132,50 @@ int main(int argc, char** argv) {
       }
     } ring_unregister{signal_relay};
 
-    // With a transform the H2D lands in scratch and the debayer writes the
-    // output slot, so the camera's buffer is released one step earlier than on
-    // the upload-only path.
     perception::UploadStage upload(ingress, device_ring, debayer, desc, config.upload);
 
-    // ---- device ring -> display, the debug consumer ----
-    perception::ViewerConsumer viewer(device_ring, probe, display_desc, config.display,
-                                      kViewerConsumerId, config.pipeline.device_id);
-    viewer.start();
+    perception::YoloConfig yolo_config = config.yolo;
+    yolo_config.engine_path = perception::resolve_next_to_exe(yolo_config.engine_path);
+
+    std::unique_ptr<perception::ViewerConsumer> camera_viewer;
+    std::unique_ptr<perception::YoloViewerConsumer> yolo_viewer;
+    std::unique_ptr<perception::HeadlessYoloConsumer> headless_yolo;
+
+    switch (config.viewer_mode) {
+      case perception::ViewerMode::Camera:
+        camera_viewer = std::make_unique<perception::ViewerConsumer>(
+            device_ring, probe, display_desc, config.display, kSecondaryConsumerId,
+            config.pipeline.device_id);
+        break;
+      case perception::ViewerMode::Yolo:
+        yolo_viewer = std::make_unique<perception::YoloViewerConsumer>(
+            device_ring, probe, display_desc, config.display, yolo_config, kSecondaryConsumerId,
+            config.pipeline.device_id);
+        break;
+      case perception::ViewerMode::Headless:
+        headless_yolo = std::make_unique<perception::HeadlessYoloConsumer>(
+            device_ring, display_desc, yolo_config,
+            perception::HeadlessYoloConsumer::OutputLocation::Host, kSecondaryConsumerId,
+            config.pipeline.device_id);
+        break;
+    }
+
+    // Closed only ever means "the window the user had open just went away";
+    // headless has no window, so it never ends the run on its own.
+    auto secondary_closed = [&] {
+      if (camera_viewer) return camera_viewer->closed();
+      if (yolo_viewer) return yolo_viewer->closed();
+      return false;
+    };
+
+    if (camera_viewer) camera_viewer->start();
+    if (yolo_viewer) yolo_viewer->start();
+    if (headless_yolo) headless_yolo->start();
 
     auto stop_helpers = [&] {
-      viewer.stop();
+      if (camera_viewer) camera_viewer->stop();
+      if (yolo_viewer) yolo_viewer->stop();
+      if (headless_yolo) headless_yolo->stop();
       device_ring.wake_all();
       if (signal_relay.joinable()) {
         pthread_kill(signal_relay.native_handle(), SIGINT);
@@ -177,9 +199,7 @@ int main(int argc, char** argv) {
         perception::arm_action_sync(system, source, config.action_sync, action_sync_checker);
       }
 
-      // ---- pipeline consumer: lease the latest frame, order the CUDA
-      // consumer stream behind it, and report ----
-      while (!g_stop.load(std::memory_order_relaxed) && !viewer.closed()) {
+      while (!g_stop.load(std::memory_order_relaxed) && !secondary_closed()) {
         const uint64_t seen = device_ring.wait_seq();
 
         perception::FramePeek peek;

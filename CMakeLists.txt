@@ -46,6 +46,8 @@ endif()
 
 add_subdirectory(pipeline)
 add_subdirectory(processing)
+add_subdirectory(tensorrt)
+add_subdirectory(visualization)
 
 # spinnaker/ builds without CUDA and app/ is what joins the two, so the app
 # only exists when both halves do.
@@ -61,10 +63,6 @@ endif()
 if(PERCEPTION_BUILD_SMOKE)
   add_subdirectory(smoke)
 endif()
-
-# if(PERCEPTION_BUILD_TESTS)
-#   add_subdirectory(tests)
-# endif()
 
 message(STATUS "CUDA toolkit ${CUDAToolkit_VERSION}, archs: ${CMAKE_CUDA_ARCHITECTURES}")
 message(STATUS "GL viewer: ${PERCEPTION_WITH_DISPLAY}")

@@ -12,3 +12,6 @@ compile_commands.json
 
 *.o
 *.so
+
+tensorrt/models/*.engine
+tensorrt/models/*.onnx

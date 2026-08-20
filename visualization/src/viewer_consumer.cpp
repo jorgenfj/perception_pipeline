@@ -43,7 +43,6 @@ ViewerConsumer::ViewerConsumer(DeviceRingBuffer& ring, const LatencyProbe& probe
 ViewerConsumer::~ViewerConsumer() { stop(); }
 
 void ViewerConsumer::start() {
-  if (!config_.enable) return;
   if (running_.exchange(true)) return;
   thread_ = std::thread(&ViewerConsumer::run, this);
 }

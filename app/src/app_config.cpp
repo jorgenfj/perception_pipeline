@@ -2,6 +2,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <filesystem>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -47,7 +48,32 @@ WritePolicy readWritePolicy(const std::string& value, const std::string& where) 
   fail(where, "expected RoundRobin or ScanForFree, got '" + value + "'");
 }
 
+ViewerMode readViewerMode(const std::string& value, const std::string& where) {
+  if (value == "camera") return ViewerMode::Camera;
+  if (value == "yolo") return ViewerMode::Yolo;
+  if (value == "headless") return ViewerMode::Headless;
+  fail(where, "expected camera, yolo, or headless, got '" + value + "'");
+}
+
+std::filesystem::path exe_dir() {
+  std::error_code ec;
+  const std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+  return ec ? std::filesystem::current_path() : exe.parent_path();
+}
+
 }  // namespace
+
+const char* to_string(ViewerMode mode) {
+  switch (mode) {
+    case ViewerMode::Camera:
+      return "camera";
+    case ViewerMode::Yolo:
+      return "yolo";
+    case ViewerMode::Headless:
+      return "headless";
+  }
+  return "?";
+}
 
 AppConfig load_app_config(const std::string& path) {
   YAML::Node root;
@@ -84,12 +110,22 @@ AppConfig load_app_config(const std::string& path) {
     read(upload, "use_graph", "upload", config.upload.use_graph);
   }
 
+  if (root["viewer"]) {
+    config.viewer_mode = readViewerMode(scalar(root["viewer"], "viewer"), "viewer");
+  }
+
   if (const YAML::Node display = root["display"]) {
-    read(display, "enable", "display", config.display.enable);
     read(display, "window_width", "display", config.display.window_width);
     read(display, "window_height", "display", config.display.window_height);
     read(display, "vsync", "display", config.display.vsync);
     read(display, "latency_scale_ms", "display", config.display.latency_scale_ms);
+  }
+
+  if (const YAML::Node yolo = root["yolo"]) {
+    read(yolo, "engine_path", "yolo", config.yolo.engine_path);
+    read(yolo, "model_width", "yolo", config.yolo.model_width);
+    read(yolo, "model_height", "yolo", config.yolo.model_height);
+    read(yolo, "conf_threshold", "yolo", config.yolo.conf_threshold);
   }
 
   if (const YAML::Node action_sync = root["action_sync"]) {
@@ -105,10 +141,15 @@ AppConfig load_app_config(const std::string& path) {
          config.action_sync.expected_start_offset_ms);
   }
 
-  // The upload stage allocates on this device, so it has to be the one the
-  // rings were built on.
   config.upload.device_id = config.pipeline.device_id;
   return config;
+}
+
+std::string default_config_path() { return (exe_dir() / "config" / "acquire.yaml").string(); }
+
+std::string resolve_next_to_exe(const std::string& path) {
+  if (path.empty() || std::filesystem::path(path).is_absolute()) return path;
+  return (exe_dir() / path).string();
 }
 
 ImageDesc to_image_desc(const CameraGeometry& geometry) {

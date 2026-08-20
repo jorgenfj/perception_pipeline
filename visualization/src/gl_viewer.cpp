@@ -116,6 +116,11 @@ bool GlViewer::should_close() const {
 }
 
 void GlViewer::present(const void* src, cudaStream_t stream, double latency_ms) {
+  present_gpu_boxes(src, stream, latency_ms, nullptr);
+}
+
+void GlViewer::present_gpu_boxes(const void* src, cudaStream_t stream, double latency_ms,
+                                 const std::function<void(cudaSurfaceObject_t)>& draw_boxes) {
   const uint64_t started = LatencyProbe::host_now_ns();
 
   cudaArray_t array = nullptr;
@@ -129,9 +134,29 @@ void GlViewer::present(const void* src, cudaStream_t stream, double latency_ms) 
                                             cudaMemcpyDeviceToDevice, stream),
                    "GlViewer: cudaMemcpy2DToArrayAsync");
 
-  // Unmapping on the same stream is what orders the copy ahead of GL's read of
-  // the texture. Without the stream argument that guarantee is against the
-  // default stream instead, and the quad below can sample a half-written frame.
+  if (draw_boxes) {
+    // Bound to the same array the frame copy above just wrote, so whatever
+    // draw_boxes enqueues here lands on top of this frame specifically --
+    // not a stale one -- because it is stream-ordered after that copy.
+    cudaResourceDesc res_desc{};
+    res_desc.resType = cudaResourceTypeArray;
+    res_desc.res.array.array = array;
+    cudaSurfaceObject_t surface = 0;
+    cuda_error_check(cudaCreateSurfaceObject(&surface, &res_desc),
+                     "GlViewer: cudaCreateSurfaceObject");
+    draw_boxes(surface);
+    // Safe to destroy right away even though the kernel it was passed to is
+    // still queued: the object is a lightweight binding resolved at launch,
+    // not something the in-flight kernel dereferences later, and the array
+    // it points at is not freed until the unmap below (which is also on
+    // this stream, so still ordered after that kernel).
+    cuda_error_check(cudaDestroySurfaceObject(surface), "GlViewer: cudaDestroySurfaceObject");
+  }
+
+  // Unmapping on the same stream is what orders the copy (and any box
+  // drawing above) ahead of GL's read of the texture. Without the stream
+  // argument that guarantee is against the default stream instead, and the
+  // quad below can sample a half-written frame.
   cuda_error_check(cudaGraphicsUnmapResources(1, &resource_, stream),
                    "GlViewer: cudaGraphicsUnmapResources");
 
@@ -184,6 +209,10 @@ void GlViewer::draw(double latency_ms) {
   glEnd();
   glBindTexture(GL_TEXTURE_2D, 0);
   glDisable(GL_TEXTURE_2D);
+
+  // Detection boxes, if any, are already burned into the frame texture
+  // itself by the time this runs -- see GlViewer::present_gpu_boxes -- so
+  // there is nothing more to draw for them here.
 
   // --- latency bar ---------------------------------------------------------
   // No text: a font would be more code than the rest of this file. A bar

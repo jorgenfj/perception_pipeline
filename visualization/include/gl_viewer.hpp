@@ -3,6 +3,7 @@
 #include <cuda_runtime.h>
 
 #include <cstdint>
+#include <functional>
 
 #include "types.hpp"
 
@@ -61,6 +62,15 @@ class GlViewer {
   // `latency_ms` drives the bar; pass a negative value while the probe has no
   // estimate yet and the bar is drawn empty.
   void present(const void* src, cudaStream_t stream, double latency_ms);
+
+  // Same as present(), except `draw_boxes` -- if set -- is invoked with a
+  // CUDA surface object bound to the same array the frame copy just wrote,
+  // after that copy and before the array is unmapped, all on `stream`. That
+  // is the hook for drawing detections without them ever crossing back to
+  // the host: see YoloEngine::draw_into, which is what a caller passes here.
+  // `draw_boxes` may be empty, meaning nothing extra is drawn.
+  void present_gpu_boxes(const void* src, cudaStream_t stream, double latency_ms,
+                        const std::function<void(cudaSurfaceObject_t)>& draw_boxes);
 
   // Frames presented, and the host time spent inside present() on the last one.
   uint64_t presented() const { return presented_; }

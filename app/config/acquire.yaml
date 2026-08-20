@@ -67,10 +67,6 @@ pipeline:
   # once its H2D has retired. Too shallow shows up as `timeouts` climbing.
   ingress_depth: 8
   device_depth: 4
-  # 2, because the GL viewer leases the ring on its own thread as an
-  # independent consumer alongside the pipeline consumer. Drop back to 1 for a
-  # headless build -- it saves a read-completion event per slot and nothing
-  # else.
   max_consumers: 2
   device_id: 0
 
@@ -82,8 +78,14 @@ pipeline:
   # from runtime lease state, so a graph cannot bake the index.
   write_policy: RoundRobin
 
-# The local GL viewer. One more consumer on the device ring; `enable: false`
-# removes it and the pipeline is unchanged.
+# Which consumer owns the device ring's secondary slot:
+#   camera   -- raw frames only, no inference (ViewerConsumer)
+#   yolo     -- frames with detections drawn on top, synced to the exact
+#               frame they were computed from (YoloViewerConsumer)
+#   headless -- the same detector with no window (HeadlessYoloConsumer),
+#               e.g. for a box with no monitor attached
+viewer: yolo
+
 #
 # vsync off on purpose: parking the swap until the panel is ready adds up to a
 # full refresh period to the very latency this is here to show. Turn it on only
@@ -95,7 +97,6 @@ pipeline:
 # point the camera at a millisecond stopwatch and photograph screen and monitor
 # together.
 display:
-  enable: true
   window_width: 1440
   window_height: 1080
   vsync: false
@@ -106,3 +107,9 @@ upload:
   # Needs a transform and RoundRobin; the upload-only path has nothing to
   # capture beyond a single memcpy.
   use_graph: false
+
+yolo:
+  engine_path: "models/yolo26m_fp16.engine"
+  model_width: 640
+  model_height: 640
+  conf_threshold: 0.25

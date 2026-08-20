@@ -98,12 +98,9 @@ UploadStage::UploadStage(HostIngressRing& in, DeviceRingBuffer& out, DeviceTrans
                  "UploadStage: cudaEventCreateWithFlags");
     }
     if (transform_) {
-      // One-shot transform setup, then drain it: enqueue() is entitled to
-      // assume whatever prepare() built is live on the device.
       transform_->prepare(input_desc_, stream_);
       cuda_error_check(cudaStreamSynchronize(stream_), "UploadStage: cudaStreamSynchronize");
     }
-    // After prepare(), so whatever it built is live and is not itself captured.
     if (config_.use_graph) capture_graphs();
   } catch (...) {
     release();
@@ -121,24 +118,15 @@ void UploadStage::capture_graphs() {
     const uint32_t scratch = slot % static_cast<uint32_t>(scratch_.size());
 
     cudaGraph_t graph = nullptr;
-    // ThreadLocal, not Global: the producer thread may be inside
-    // HostIngressRing::acquire()'s cudaEventSynchronize right now, and Global
-    // mode would flag that unrelated call as unsafe.
     cuda_error_check(cudaStreamBeginCapture(stream_, cudaStreamCaptureModeThreadLocal),
                      "UploadStage: cudaStreamBeginCapture");
     try {
-      // Capture the device work only. Every event record and wait stays outside
-      // the graph, on the stream around the launch -- it keeps the ring APIs
-      // untouched and sidesteps the semantics of an event both recorded inside
-      // a graph and waited on by a later replay of it.
       cuda_error_check(cudaMemcpyAsync(scratch_[scratch], in_->host_ptr(pinned),
                                        input_desc_.bytes(), cudaMemcpyHostToDevice, stream_),
                        "UploadStage: cudaMemcpyAsync(capture)");
       transform_->enqueue(scratch_[scratch], input_desc_, out_->data_at_slot(slot), output_desc_,
                           stream_);
     } catch (...) {
-      // The stream stays in capture mode until it is ended, so it has to be
-      // closed even on the failure path or every later launch errors out.
       cudaStreamEndCapture(stream_, &graph);
       if (graph) cudaGraphDestroy(graph);
       throw;
@@ -152,16 +140,18 @@ void UploadStage::capture_graphs() {
 }
 
 void UploadStage::enqueue_eager(const HostIngressRing::Staged& staged, uint32_t scratch,
-                                void* dst) {
+                                void* dst, const std::function<void()>& release_pinned) {
   cuda_error_check(cudaMemcpyAsync(scratch_[scratch], staged.data, staged.bytes,
                                    cudaMemcpyHostToDevice, stream_),
                    "UploadStage: cudaMemcpyAsync(H2D)");
+  // The pinned slot's only reader is the copy just enqueued above, so it can
+  // go back to the ring now rather than waiting for the transform too.
+  release_pinned();
   transform_->enqueue(scratch_[scratch], input_desc_, dst, output_desc_, stream_);
 }
 
 UploadStage::~UploadStage() {
   stop();
-  // Nothing may still be reading the scratch buffers when they are freed.
   cudaStreamSynchronize(stream_);
   release();
 }
@@ -204,10 +194,6 @@ bool UploadStage::process(const HostIngressRing::Staged& staged) {
   }
 
   if (transform_ == nullptr) {
-    // Upload only. The output slot is the copy's destination, so the lease has
-    // to come first; the H2D therefore sits inside the lease's window. If
-    // anything throws before publish, the lease's destructor restores the slot
-    // rather than stranding it.
     WriteLease out_lease = out_->acquire_write(stream_);
     cuda_error_check(cudaMemcpyAsync(out_lease.data(), staged.data, staged.bytes,
                                cudaMemcpyHostToDevice, stream_),
@@ -219,46 +205,27 @@ bool UploadStage::process(const HostIngressRing::Staged& staged) {
     return true;
   }
 
-  // Held from here until publish. A throw in between is no longer a stranded
-  // slot -- the lease's destructor restores parity and stamps a sentinel
-  // timestamp, which is the abandon path the raw slot API never had.
   WriteLease out_lease = out_->acquire_write(stream_);
   const uint32_t slot = out_lease.slot();
 
-  // Derived from the slot, not counted alongside it: a separate counter went
-  // permanently out of phase the first time anything threw before acquire_write,
-  // which silently disabled graph replay from then on.
   const uint32_t scratch = slot % static_cast<uint32_t>(scratch_.size());
-
-  // Reuse interlock for the scratch buffer, mirroring the one the two rings
-  // run: the transform that last read it must have finished. A never-recorded
-  // event counts as complete, so the first lap passes straight through.
   cuda_error_check(cudaEventSynchronize(scratch_free_[scratch]),
              "UploadStage: cudaEventSynchronize(scratch)");
 
   if (graph_exec_.empty()) {
-    enqueue_eager(staged, scratch, out_lease.data());
+    enqueue_eager(staged, scratch, out_lease.data(), [&hold] { hold.release(); });
   } else if (staged.bytes != input_desc_.bytes() ||
              staged.slot != slot % in_->slot_count()) {
-    // A captured graph bakes its pointers and its copy size, so it is only
-    // valid for the indices it was captured with. The ingress slot advances on
-    // its own, so a drift shows up here instead of silently replaying a graph
-    // that reads the wrong buffer.
+    // Log the error, and fallback to eager path
     graph_fallbacks_.fetch_add(1, std::memory_order_relaxed);
-    enqueue_eager(staged, scratch, out_lease.data());
+    enqueue_eager(staged, scratch, out_lease.data(), [&hold] { hold.release(); });
   } else {
     cuda_error_check(cudaGraphLaunch(graph_exec_[slot], stream_), "UploadStage: cudaGraphLaunch");
+    // Hold is on the same stream as the graph,
+    // so hold.release event is queued after the graph launch.
+    hold.release();
   }
 
-  // Later than the eager path used to release it: the graph is one opaque unit,
-  // so the pinned slot comes back after the transform rather than between it and
-  // the copy. Stream ordering had already pushed the effective hold out to full
-  // stage latency, so this costs nothing real.
-  hold.release();
-
-  // Both events sit after the transform on the same stream, so each fires when
-  // the buffer it guards stops being read: the output slot for consumers, the
-  // scratch slot for the next lap.
   out_lease.publish(staged.timestamp_ns);
   cuda_error_check(cudaEventRecord(scratch_free_[scratch], stream_),
              "UploadStage: cudaEventRecord(scratch)");
@@ -279,7 +246,6 @@ void UploadStage::stop() {
 }
 
 void UploadStage::run(std::stop_token stoken) {
-  // Per-thread state, so the worker has to set it for itself.
   try {
     cuda_error_check(cudaSetDevice(config_.device_id), "UploadStage: cudaSetDevice");
   } catch (const std::exception& e) {
@@ -292,9 +258,6 @@ void UploadStage::run(std::stop_token stoken) {
     try {
       if (!step_blocking(stoken) && !in_->running()) break;
     } catch (const std::exception& e) {
-      // One bad frame should not take the pipeline down, but a persistent
-      // fault would otherwise spin silently, so it is counted as well as
-      // printed.
       failed_.fetch_add(1, std::memory_order_relaxed);
       std::fprintf(stderr, "upload stage: %s\n", e.what());
     }
