@@ -5,6 +5,7 @@
 
 add_library(perception_processing
   src/transforms/debayer.cu
+  src/transforms/yolo_preprocess.cu
   )
 
 target_include_directories(perception_processing PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
