@@ -42,6 +42,7 @@ struct YoloViewerConsumer::Impl {
   std::thread thread;
   std::atomic<bool> running{false};
   std::atomic<bool> closed{false};
+  double last_process_ms = -1.0;
 
   Impl(DeviceRingBuffer& ring_ref, const LatencyProbe& probe_ref, const ImageDesc& desc_in,
       const DisplayConfig& display_config_in, const YoloConfig& yolo_config_in,
@@ -123,6 +124,9 @@ struct YoloViewerConsumer::Impl {
         }
 
         if (engine) {
+          double process_ms = 0.0;
+          if (engine->process_ms(process_ms)) last_process_ms = process_ms;
+
           engine->enqueue(lease.texture(), stream);
           viewer->present_gpu_boxes(lease.data(), stream, latency_ms,
                                    [&](cudaSurfaceObject_t surface) {
@@ -133,8 +137,10 @@ struct YoloViewerConsumer::Impl {
         }
 
         if (viewer->presented() % kReportEvery == 0) {
-          std::printf("display: presented=%lu present=%.2fms\n", viewer->presented(),
+          std::printf("display: presented=%lu present=%.2fms", viewer->presented(),
                      viewer->last_present_ms());
+          if (engine) std::printf(" | yolo process=%.2fms", last_process_ms);
+          std::printf("\n");
         }
         // Lease goes out of scope and destructor returns the slot
       }

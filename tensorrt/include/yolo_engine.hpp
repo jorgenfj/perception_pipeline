@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "cuda_util.hpp"
 #include "detection.hpp"
 #include "transforms/yolo_preprocess.hpp"
 #include "trt_engine.hpp"
@@ -85,6 +86,16 @@ class YoloEngine {
 
   double last_infer_ms() const { return last_infer_ms_; }
 
+  // GPU time for the most recently *completed* enqueue() call
+  bool process_ms(double& out_ms) const {
+    if (!have_process_events_) return false;
+    if (cudaEventQuery(process_end_) != cudaSuccess) return false;
+    float ms = 0.0f;
+    if (cudaEventElapsedTime(&ms, process_start_, process_end_) != cudaSuccess) return false;
+    out_ms = static_cast<double>(ms);
+    return true;
+  }
+
  private:
   ImageDesc source_desc_;
   Config config_;
@@ -101,6 +112,10 @@ class YoloEngine {
   std::vector<float> output_host_;
 
   double last_infer_ms_ = 0.0;
+
+  CudaEvent process_start_{cudaEventDefault};
+  CudaEvent process_end_{cudaEventDefault};
+  bool have_process_events_ = false;
 };
 
 }  // namespace perception

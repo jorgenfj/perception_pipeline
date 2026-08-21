@@ -69,6 +69,9 @@ bool HeadlessYoloConsumer::step(CudaStream& stream) {
   cuda_error_check(cudaStreamWaitEvent(stream, lease.data_ready_event(), 0),
                    "HeadlessYoloConsumer: cudaStreamWaitEvent");
 
+  double process_ms = 0.0;
+  if (engine_.process_ms(process_ms)) last_process_ms_ = process_ms;
+
   engine_.enqueue(lease.texture(), stream);
 
   const uint32_t slot = lease.slot();
@@ -107,10 +110,11 @@ bool HeadlessYoloConsumer::step(CudaStream& stream) {
   const uint64_t done = processed_.fetch_add(1, std::memory_order_relaxed) + 1;
   if (done % kReportEvery == 0) {
     if (output_location_ == OutputLocation::Host) {
-      std::printf("yolo: processed=%lu infer=%.1fms detections=%zu\n",
-                 static_cast<unsigned long>(done), engine_.last_infer_ms(), found);
+      std::printf("yolo: processed=%lu process=%.2fms infer=%.1fms detections=%zu\n",
+                 static_cast<unsigned long>(done), last_process_ms_, engine_.last_infer_ms(), found);
     } else {
-      std::printf("yolo: processed=%lu (device output)\n", static_cast<unsigned long>(done));
+      std::printf("yolo: processed=%lu process=%.2fms (device output)\n",
+                 static_cast<unsigned long>(done), last_process_ms_);
     }
   }
   return true;

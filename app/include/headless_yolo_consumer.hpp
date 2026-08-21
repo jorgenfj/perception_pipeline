@@ -84,6 +84,7 @@ class HeadlessYoloConsumer {
   uint32_t last_slot_ = 0;
   uint64_t last_seq_ = 0;
   bool have_last_ = false;
+  double last_process_ms_ = -1.0;
 };
 
 }  // namespace perception

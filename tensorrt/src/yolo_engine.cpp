@@ -75,9 +75,12 @@ YoloEngine::~YoloEngine() {
 }
 
 void YoloEngine::enqueue(cudaTextureObject_t texture, cudaStream_t stream) {
+  cuda_error_check(cudaEventRecord(process_start_, stream), "YoloEngine: cudaEventRecord start");
   preprocess_.enqueue(texture, source_desc_.width, source_desc_.height,
                      static_cast<float*>(input_device_), stream);
   engine_->enqueue(stream);
+  cuda_error_check(cudaEventRecord(process_end_, stream), "YoloEngine: cudaEventRecord end");
+  have_process_events_ = true;
 }
 
 std::vector<Detection> YoloEngine::decode(cudaStream_t stream) {
