@@ -83,6 +83,7 @@ void ViewerConsumer::run() {
   CudaStream stream;
   uint32_t last_slot = ~0u;
   uint64_t last_seq = ~0ull;
+  uint64_t last_report_ns = LatencyProbe::host_now_ns();
 
   try {
     while (running_.load(std::memory_order_relaxed)) {
@@ -120,8 +121,12 @@ void ViewerConsumer::run() {
       viewer->present(lease.data(), stream, latency_ms);
 
       if (viewer->presented() % kReportEvery == 0) {
-        std::printf("display: presented=%lu present %.2f ms\n", viewer->presented(),
-                    viewer->last_present_ms());
+        const uint64_t now_ns = LatencyProbe::host_now_ns();
+        const double elapsed_s = static_cast<double>(now_ns - last_report_ns) * 1e-9;
+        const double fps = elapsed_s > 0.0 ? static_cast<double>(kReportEvery) / elapsed_s : 0.0;
+        last_report_ns = now_ns;
+
+        std::printf("display: fps=%.2f\n", fps);
       }
     }
   } catch (const std::exception& e) {

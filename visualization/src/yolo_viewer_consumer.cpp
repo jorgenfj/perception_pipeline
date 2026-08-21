@@ -43,6 +43,7 @@ struct YoloViewerConsumer::Impl {
   std::atomic<bool> running{false};
   std::atomic<bool> closed{false};
   double last_process_ms = -1.0;
+  uint64_t last_report_ns = 0;
 
   Impl(DeviceRingBuffer& ring_ref, const LatencyProbe& probe_ref, const ImageDesc& desc_in,
       const DisplayConfig& display_config_in, const YoloConfig& yolo_config_in,
@@ -97,6 +98,7 @@ struct YoloViewerConsumer::Impl {
     CudaStream stream;
     uint32_t last_slot = ~0u;
     uint64_t last_seq = ~0ull;
+    last_report_ns = LatencyProbe::host_now_ns();
 
     try {
       while (running.load(std::memory_order_relaxed)) {
@@ -137,8 +139,12 @@ struct YoloViewerConsumer::Impl {
         }
 
         if (viewer->presented() % kReportEvery == 0) {
-          std::printf("display: presented=%lu present=%.2fms", viewer->presented(),
-                     viewer->last_present_ms());
+          const uint64_t now_ns = LatencyProbe::host_now_ns();
+          const double elapsed_s = static_cast<double>(now_ns - last_report_ns) * 1e-9;
+          const double fps = elapsed_s > 0.0 ? static_cast<double>(kReportEvery) / elapsed_s : 0.0;
+          last_report_ns = now_ns;
+
+          std::printf("display: fps=%.2f", fps);
           if (engine) std::printf(" | yolo process=%.2fms", last_process_ms);
           std::printf("\n");
         }
