@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -59,6 +60,33 @@ class SpinnakerSource {
   void start(FrameSink& sink);
   void stop();
 
+  // True only once the acquisition thread has *given up* -- reconnect is
+  // disabled or its attempt budget ran out. A camera error on its own does not
+  // set this: the stream is torn down and re-opened, and the run continues. The
+  // thread is gone when this is set, so no further frames will ever be
+  // committed; it is the signal for whoever owns the pipeline to shut down
+  // rather than block forever waiting on a publish that cannot come.
+  bool failed() const { return failed_.load(std::memory_order_acquire); }
+
+  // True while the stream is down and the source is trying to get it back.
+  bool reconnecting() const { return reconnecting_.load(std::memory_order_relaxed); }
+
+  // Completed reconnects since start() -- how many times the camera dropped and
+  // came back. Steadily climbing means the pipeline is only staying up because
+  // of the retry loop, which is worth noticing.
+  uint64_t reconnects() const { return reconnects_.load(std::memory_order_relaxed); }
+
+  // Why it stopped -- only meaningful once failed() is true, which is also what
+  // publishes this string (written before the flag, read after it).
+  const std::string& failure() const { return failure_; }
+
+  // Invoked once, on the acquisition thread, immediately after failed() is set.
+  // Exists so the owner can kick whatever it is parked on -- e.g.
+  // DeviceRingBuffer::wake_all() -- instead of waiting out a publish that will
+  // never arrive. Must be set before start(). Anything it throws is swallowed:
+  // this runs on a thread whose whole point right now is to die quietly.
+  void set_failure_callback(std::function<void()> cb) { on_failure_ = std::move(cb); }
+
   // GevIEEE1588Status off the node map ("Slave" once locked to a master), or
   // "" if this camera doesn't expose PTP at all. A live GVCP register read,
   // not cached -- call sparingly (a startup check, or every N frames), not
@@ -104,7 +132,37 @@ class SpinnakerSource {
 
  private:
   void run(FrameSink& sink);
+  // Publishes `reason` then the failed() flag, and fires on_failure_ once.
+  void fail(std::string reason);
   void bind_buffers(FrameSink& sink);
+
+  // Init + features + StreamBufferCountMode + min_slots_. Split out of the
+  // constructor so a reconnect re-applies exactly the same setup.
+  void configure_camera();
+
+  // Re-reads geometry and throws if it no longer matches what the sink was
+  // sized for. A camera that came back with different geometry cannot be
+  // reattached to buffers cut for the old one.
+  void verify_geometry();
+
+  // Bind buffers and BeginAcquisition. `hard` additionally DeInit/Init's and
+  // re-applies the config first, for a camera that actually went away rather
+  // than one whose stream merely errored. False (with the reason logged) if the
+  // camera is not ready yet.
+  bool open_stream(FrameSink& sink, bool hard);
+
+  // EndAcquisition, drain, release. Safe to call on an already-broken stream;
+  // never throws.
+  void close_stream(FrameSink& sink) noexcept;
+
+  // Reclaim in a loop until no buffer is still held by the reader, so the
+  // camera cannot be re-armed onto a slot the pipeline is mid-read on. False on
+  // timeout, which leaves those slots held and is why re-arming waits for it.
+  bool drain_held(FrameSink& sink, std::chrono::milliseconds timeout);
+
+  // One acquisition session. Returns empty on a requested stop, otherwise the
+  // error that ended it.
+  std::string grab_loop(FrameSink& sink);
   // Hand back every slot the reader has finished with. Called before each grab,
   // so the pool refills as fast as reads retire.
   void reclaim(FrameSink& sink);
@@ -123,6 +181,12 @@ class SpinnakerSource {
 
   std::thread thread_;
   std::atomic<bool> running_{false};
+
+  std::string failure_;
+  std::atomic<bool> failed_{false};
+  std::atomic<bool> reconnecting_{false};
+  std::atomic<uint64_t> reconnects_{0};
+  std::function<void()> on_failure_;
   std::atomic<uint64_t> delivered_{0};
   std::atomic<uint64_t> incomplete_{0};
   std::array<std::atomic<uint64_t>, 16> incomplete_by_status_{};

@@ -94,6 +94,9 @@ CameraConfig load_camera_config(const std::string& path) {
 
   read(camera, "serial", "camera", config.serial);
   read(camera, "timeout_ms", "camera", config.timeout_ms);
+  read(camera, "reconnect_attempts", "camera", config.reconnect_attempts);
+  read(camera, "reconnect_backoff_ms", "camera", config.reconnect_backoff_ms);
+  read(camera, "reconnect_backoff_max_ms", "camera", config.reconnect_backoff_max_ms);
   config.features = readFeatures(camera["features"], "camera.features");
   config.stream_features = readFeatures(camera["stream_features"], "camera.stream_features");
   return config;

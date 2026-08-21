@@ -69,6 +69,9 @@ void Reporter::print(uint64_t consumed, const ReadLease& lease) {
   if (source_->incomplete()) {
     std::printf(" (%s)", source_->incomplete_breakdown().c_str());
   }
+  if (source_->reconnects()) {
+    std::printf(" reconnects=%lu", source_->reconnects());
+  }
 
   double raw_min_ms = 0.0, raw_mean_ms = 0.0, raw_max_ms = 0.0;
   if (probe_->raw_snapshot_reset(raw_min_ms, raw_mean_ms, raw_max_ms)) {
@@ -109,6 +112,9 @@ void Reporter::print_summary(uint64_t consumed) const {
               upload_->failed());
   if (source_->incomplete()) {
     std::printf("incomplete breakdown: %s\n", source_->incomplete_breakdown().c_str());
+  }
+  if (source_->reconnects()) {
+    std::printf("camera reconnects: %lu\n", source_->reconnects());
   }
 #ifdef PERCEPTION_TRACE_POOL
   std::printf("pool: depth=%u peak=%u still-held=%u starved=%lu reclaimed=%lu "

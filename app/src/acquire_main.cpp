@@ -192,6 +192,7 @@ int main(int argc, char** argv) {
 
     perception::CudaStream consumer;
     try {
+      source.set_failure_callback([&device_ring] { device_ring.wake_all(); });
       source.start(sink);
       upload.start();
 
@@ -199,7 +200,7 @@ int main(int argc, char** argv) {
         perception::arm_action_sync(system, source, config.action_sync, action_sync_checker);
       }
 
-      while (!g_stop.load(std::memory_order_relaxed) && !secondary_closed()) {
+      while (!g_stop.load(std::memory_order_relaxed) && !secondary_closed() && !source.failed()) {
         const uint64_t seen = device_ring.wait_seq();
 
         perception::FramePeek peek;
@@ -234,6 +235,11 @@ int main(int argc, char** argv) {
     cudaStreamSynchronize(consumer);
 
     reporter.print_summary(consumed);
+
+    if (source.failed()) {
+      std::printf("acquisition failed: %s\n", source.failure().c_str());
+      status = 1;
+    }
   } catch (const std::exception& e) {
     std::printf("FAILED: %s\n", e.what());
     status = 1;

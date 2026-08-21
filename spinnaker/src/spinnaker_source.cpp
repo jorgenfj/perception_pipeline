@@ -2,11 +2,14 @@
 
 #include <SpinGenApi/SpinnakerGenApi.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cstdarg>
 #include <cstdio>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace perception {
@@ -173,9 +176,8 @@ Spinnaker::CameraPtr SpinnakerSource::select(Spinnaker::CameraList& cameras,
   return camera;
 }
 
-SpinnakerSource::SpinnakerSource(Spinnaker::CameraPtr camera, CameraConfig config)
-    : camera_(camera), config_(std::move(config)) {
-  camera_->Init();
+void SpinnakerSource::configure_camera() {
+  if (!camera_->IsInitialized()) camera_->Init();
 
   INodeMap& nodes = camera_->GetNodeMap();
   INodeMap& stream = camera_->GetTLStreamNodeMap();
@@ -192,6 +194,31 @@ SpinnakerSource::SpinnakerSource(Spinnaker::CameraPtr camera, CameraConfig confi
   // where the plain queueing modes need two.
   const std::string handling = currentEnum(stream, "StreamBufferHandlingMode");
   min_slots_ = (handling == "NewestOnly" || handling == "OldestFirstOverwrite") ? 3 : 2;
+}
+
+void SpinnakerSource::verify_geometry() {
+  INodeMap& nodes = camera_->GetNodeMap();
+  const auto width = static_cast<uint32_t>(readInt(nodes, "Width"));
+  const auto height = static_cast<uint32_t>(readInt(nodes, "Height"));
+  const auto frame_bytes = static_cast<std::size_t>(readInt(nodes, "PayloadSize"));
+  const std::string pixel_format = currentEnum(nodes, "PixelFormat");
+
+  if (width != geometry_.width || height != geometry_.height ||
+      frame_bytes != geometry_.frame_bytes || pixel_format != geometry_.pixel_format) {
+    throw std::runtime_error("camera came back with different geometry (" + std::to_string(width) +
+                             "x" + std::to_string(height) + " " + pixel_format + ", " +
+                             std::to_string(frame_bytes) + " bytes/frame); the sink's buffers were "
+                             "cut for " + std::to_string(geometry_.width) + "x" +
+                             std::to_string(geometry_.height) + " " + geometry_.pixel_format +
+                             ", " + std::to_string(geometry_.frame_bytes) + " bytes/frame");
+  }
+}
+
+SpinnakerSource::SpinnakerSource(Spinnaker::CameraPtr camera, CameraConfig config)
+    : camera_(camera), config_(std::move(config)) {
+  configure_camera();
+
+  INodeMap& nodes = camera_->GetNodeMap();
 
   geometry_.width = static_cast<uint32_t>(readInt(nodes, "Width"));
   geometry_.height = static_cast<uint32_t>(readInt(nodes, "Height"));
@@ -264,11 +291,25 @@ void SpinnakerSource::start(FrameSink& sink) {
   held_now_.store(0, std::memory_order_relaxed);
   held_peak_.store(0, std::memory_order_relaxed);
   was_starved_ = false;
-  thread_ = std::thread(&SpinnakerSource::run, this, std::ref(sink));
+  failed_.store(false, std::memory_order_relaxed);
+  failure_.clear();
+  thread_ = std::thread([this, &sink] {
+    try {
+      run(sink);
+    } catch (const std::exception& e) {
+      std::fprintf(stderr, "acquisition thread aborted: %s\n", e.what());
+      running_.store(false);
+      fail(e.what());
+    } catch (...) {
+      std::fprintf(stderr, "acquisition thread aborted: unknown exception\n");
+      running_.store(false);
+      fail("unknown exception on the acquisition thread");
+    }
+  });
 }
 
 void SpinnakerSource::stop() {
-  if (!running_.exchange(false)) return;
+  running_.store(false, std::memory_order_relaxed);
   if (thread_.joinable()) thread_.join();
 }
 
@@ -306,18 +347,139 @@ void SpinnakerSource::release_held() {
   held_now_.store(0, std::memory_order_relaxed);
 }
 
-void SpinnakerSource::run(FrameSink& sink) {
+void SpinnakerSource::fail(std::string reason) {
+  if (failed_.load(std::memory_order_relaxed)) return;
+  failure_ = std::move(reason);
+  failed_.store(true, std::memory_order_release);
+  if (on_failure_) {
+    try {
+      on_failure_();
+    } catch (...) {
+    }
+  }
+}
+
+bool SpinnakerSource::drain_held(FrameSink& sink, std::chrono::milliseconds timeout) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (held_now_.load(std::memory_order_relaxed) != 0) {
+    reclaim(sink);
+    if (held_now_.load(std::memory_order_relaxed) == 0) break;
+    if (std::chrono::steady_clock::now() >= deadline) return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  return true;
+}
+
+bool SpinnakerSource::open_stream(FrameSink& sink, bool hard) {
   try {
+    if (hard) {
+      try {
+        if (camera_->IsInitialized()) camera_->DeInit();
+      } catch (const std::exception&) {
+      }
+      configure_camera();
+      verify_geometry();
+    }
     bind_buffers(sink);
     camera_->BeginAcquisition();
+    return true;
   } catch (const std::exception& e) {
-    // SPINNAKER_ERR_NOT_IMPLEMENTED lands here when the transport rejects this
-    // stream mode with user-owned buffers, which is the one combination the
-    // zero-copy path depends on.
-    std::fprintf(stderr, "BeginAcquisition failed: %s\n", e.what());
-    running_.store(false);
-    return;
+    std::fprintf(stderr, "camera open failed: %s\n", e.what());
+    return false;
   }
+}
+
+void SpinnakerSource::close_stream(FrameSink& sink) noexcept {
+  try {
+    camera_->EndAcquisition();
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "EndAcquisition failed during teardown: %s\n", e.what());
+  }
+
+  try {
+    if (!drain_held(sink, std::chrono::milliseconds(2000))) {
+      std::fprintf(stderr, "camera teardown: %u buffer(s) still held by the reader after 2s\n",
+                   held_now_.load(std::memory_order_relaxed));
+    }
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "camera teardown: drain failed: %s\n", e.what());
+  }
+
+  release_held();
+}
+
+void SpinnakerSource::run(FrameSink& sink) {
+  int attempt = 0;
+  uint64_t backoff_ms = 0;
+  bool hard_open = false;
+  bool ever_opened = false;
+
+  while (running_.load(std::memory_order_relaxed)) {
+    if (backoff_ms) {
+      const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(backoff_ms);
+      while (running_.load(std::memory_order_relaxed) &&
+             std::chrono::steady_clock::now() < until) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+      if (!running_.load(std::memory_order_relaxed)) break;
+    }
+
+    const bool opened = open_stream(sink, hard_open);
+    hard_open = true;
+
+    if (!opened) {
+      const bool give_up = config_.reconnect_attempts == 0 ||
+                           (config_.reconnect_attempts > 0 && ++attempt >= config_.reconnect_attempts);
+      if (give_up) {
+        running_.store(false);
+        fail("could not open the camera after " + std::to_string(attempt) + " attempt(s)");
+        return;
+      }
+      reconnecting_.store(true, std::memory_order_relaxed);
+      backoff_ms = std::max<uint64_t>(config_.reconnect_backoff_ms,
+                                      std::min(backoff_ms * 2, config_.reconnect_backoff_max_ms));
+      continue;
+    }
+
+    if (ever_opened) {
+      reconnects_.fetch_add(1, std::memory_order_relaxed);
+      std::fprintf(stderr, "camera reconnected (reconnects=%llu)\n",
+                   static_cast<unsigned long long>(reconnects_.load(std::memory_order_relaxed)));
+    }
+    ever_opened = true;
+    reconnecting_.store(false, std::memory_order_relaxed);
+    attempt = 0;
+    backoff_ms = 0;
+
+    const uint64_t before = delivered_.load(std::memory_order_relaxed);
+    const std::string reason = grab_loop(sink);
+    close_stream(sink);
+
+    if (reason.empty()) break;
+
+    if (config_.reconnect_attempts == 0) {
+      running_.store(false);
+      fail(reason);
+      return;
+    }
+    if (delivered_.load(std::memory_order_relaxed) != before) {
+      attempt = 0;
+      backoff_ms = 0;
+    } else {
+      backoff_ms = std::max<uint64_t>(config_.reconnect_backoff_ms,
+                                      std::min(backoff_ms * 2, config_.reconnect_backoff_max_ms));
+    }
+
+    reconnecting_.store(true, std::memory_order_relaxed);
+    std::fprintf(stderr, "camera error, reconnecting: %s\n", reason.c_str());
+  }
+
+  running_.store(false);
+  reconnecting_.store(false, std::memory_order_relaxed);
+}
+
+std::string SpinnakerSource::grab_loop(FrameSink& sink) {
+  std::string stop_reason;
 
   while (running_.load(std::memory_order_relaxed)) {
     try {
@@ -379,17 +541,16 @@ void SpinnakerSource::run(FrameSink& sink) {
         continue;
       }
       std::fprintf(stderr, "acquisition stopped: %s\n", e.what());
+      stop_reason = e.what();
       break;
     } catch (const std::exception& e) {
       std::fprintf(stderr, "acquisition stopped: %s\n", e.what());
+      stop_reason = e.what();
       break;
     }
   }
 
-  running_.store(false);
-  camera_->EndAcquisition();
-  // After EndAcquisition, so nothing can be handed back into a live pool.
-  release_held();
+  return stop_reason;
 }
 
 }  // namespace perception

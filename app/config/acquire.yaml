@@ -11,6 +11,10 @@ camera:
   serial: ""
   timeout_ms: 1000
 
+  reconnect_attempts: -1
+  reconnect_backoff_ms: 500
+  reconnect_backoff_max_ms: 5000
+
   # GenICam nodes on the camera node map, applied in this order before
   # acquisition starts. Order matters: ExposureAuto has to be Off before
   # ExposureTime is writable, and geometry has to be set before PayloadSize

@@ -24,6 +24,18 @@ struct CameraConfig {
 
   // The same, against the transport-layer stream node map.
   FeatureList stream_features;
+
+  // A camera error ends acquisition, not the run: the source tears the stream
+  // down and re-opens it. Negative retries forever, 0 disables reconnect (the
+  // first non-timeout error is then fatal, as it used to be).
+  //
+  // "Attempts" counts consecutive failures to get back to acquiring
+  int reconnect_attempts = -1;
+
+  // Delay before the first retry, doubled each consecutive failure up to
+  // reconnect_backoff_max_ms. The first retry after a good run is immediate.
+  uint64_t reconnect_backoff_ms = 500;
+  uint64_t reconnect_backoff_max_ms = 5000;
 };
 
 // What the camera turned out to be once the features were applied. The pixel
