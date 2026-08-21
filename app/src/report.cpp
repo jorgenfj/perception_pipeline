@@ -75,7 +75,7 @@ void Reporter::print(uint64_t consumed, const ReadLease& lease) {
     std::printf(" | cam->host min/mean/max %.2f/%.2f/%.2f ms", raw_min_ms, raw_mean_ms, raw_max_ms);
   }
   if (latency_.count) {
-    std::printf(" | host->display min/mean/max %.2f/%.2f/%.2f ms", latency_.min_ms,
+    std::printf(" | host->device min/mean/max %.2f/%.2f/%.2f ms", latency_.min_ms,
                 latency_.mean_ms(), latency_.max_ms);
   }
   if (config_->action_sync.enabled && fps_window_.count > 0) {
