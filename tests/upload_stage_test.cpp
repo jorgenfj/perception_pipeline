@@ -479,8 +479,11 @@ void test_read_lease_stalls_producer() {
 
   publish_frames(device, producer, 1, 2);  // fills both slots; latest_ is the 2nd
 
-  perception::ReadLease lease = device.lease_latest(0, consumer);
-  check(lease.valid(), "leased the newest frame");
+  // Lease the OLDER slot, not latest_. Leasing latest_ would leave the older
+  // slot free -- not latest, nobody reading it -- and the producer would simply
+  // take that one, which is correct behaviour and not what this test is about.
+  perception::ReadLease lease = device.lease_by_timestamp(1000, 0, 0, consumer, true);
+  check(lease.valid(), "leased the older of the two frames");
 
   std::atomic<bool> wrote{false};
   std::thread writer([&] {

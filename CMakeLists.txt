@@ -64,6 +64,10 @@ if(PERCEPTION_BUILD_SMOKE)
   add_subdirectory(smoke)
 endif()
 
+if(PERCEPTION_BUILD_TESTS)
+  add_subdirectory(tests)
+endif()
+
 message(STATUS "CUDA toolkit ${CUDAToolkit_VERSION}, archs: ${CMAKE_CUDA_ARCHITECTURES}")
 message(STATUS "GL viewer: ${PERCEPTION_WITH_DISPLAY}")
 message(STATUS "Pool trace: ${PERCEPTION_TRACE_POOL}")

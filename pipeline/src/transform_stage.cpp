@@ -45,7 +45,7 @@ TransformStage::~TransformStage() {
 bool TransformStage::step() {
   // Unleased peek first, so an idle poll costs a couple of atomic loads rather
   // than a lease acquire and release.
-  FrameView peek;
+  FramePeek peek;
   if (!in_->view_latest_inplace(peek)) return false;
   if (have_last_ && peek.slot == last_slot_ && peek.slot_seq == last_seq_) return false;
 
