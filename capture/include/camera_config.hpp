@@ -62,11 +62,53 @@ struct CameraGeometry {
 // default. A document with no `camera:` section yields the defaults above.
 CameraConfig load_camera_config(const std::string& path);
 
+// A Scheduled Action Command that starts acquisition on every camera in the
+// group at one PTP instant, rather than whenever each happens to be told to.
+// See spinnaker/README.md. Absent from the yaml (the normal case), `enabled`
+// stays false and acquisition free-runs exactly as before.
+struct ActionSyncConfig {
+  bool enabled = false;
+  uint32_t device_key = 1;
+  uint32_t group_key = 1;
+  uint32_t group_mask = 1;
+  double expected_hz = 7.5;
+  double lead_time_ms = 500.0;
+  uint32_t check_frames = 60;
+  double tolerance_ms = 2.0;
+  // GetTimeStamp()'s latch point relative to the trigger instant is a sensor
+  // convention this app has no way to know in advance -- e.g. end-of-exposure
+  // instead of start-of-exposure shows up as a start offset equal to
+  // ExposureTime, not a sync failure. Set this once measured so the verdict
+  // checks precision, not an unrelated constant.
+  double expected_start_offset_ms = 0.0;
+
+  // How long to wait for both cameras to reach PTP "Slave" before arming.
+  // Applying the camera config resets their PTP state machine, so they start in
+  // "Listening" and need a few Announce intervals; sampling once and giving up
+  // fails a rig that was about to work.
+  uint32_t ptp_wait_ms = 20000;
+};
+
+// Reads the `action_sync:` section. Shared by acquire and stereo_view so the
+// two cannot drift into disagreeing about what a key means.
+ActionSyncConfig load_action_sync_config(const std::string& path);
+
 // How many buffers the standalone driver allocates when the config does not
 // say. Only used by spin_acquire; the pipeline sizes its own rings.
 struct StandaloneConfig {
   uint32_t buffer_count = 8;
   uint64_t max_frames = 0;  // 0 runs until interrupted
+
+  // Write every delivered frame to a recording. Off by default: this is a
+  // bring-up tool that can record, not a recorder.
+  bool record = false;
+  std::string record_root = "recordings";
+  uint32_t staging_frames = 32;
+
+  // The manifest's role for the single stream. "left" or "right" if this
+  // camera is half of a rig being recorded one eye at a time -- it is what
+  // `source.role` matches against on playback.
+  std::string record_role = "mono";
 };
 
 StandaloneConfig load_standalone_config(const std::string& path);

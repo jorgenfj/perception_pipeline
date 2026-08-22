@@ -19,8 +19,7 @@ std::size_t roundUp(std::size_t value, std::size_t to) {
 HeapFrameSink::HeapFrameSink(uint32_t slot_count, std::size_t slot_bytes)
     : slot_bytes_(roundUp(slot_bytes, kPageSize)),
       buffers_(slot_count, nullptr),
-      bytes_(slot_count, 0),
-      timestamp_ns_(slot_count, 0),
+      meta_(slot_count),
       state_(slot_count, SlotState::Idle) {
   if (slot_count == 0 || slot_bytes == 0) {
     throw std::runtime_error("HeapFrameSink: empty sink");
@@ -46,9 +45,9 @@ uint32_t HeapFrameSink::slot_of(const void* ptr) const {
   return kNoSlot;
 }
 
-void HeapFrameSink::commit(uint32_t slot, uint64_t timestamp_ns, std::size_t bytes) {
+void HeapFrameSink::commit(uint32_t slot, const FrameMeta& meta) {
   if (slot >= slot_count()) throw std::runtime_error("HeapFrameSink::commit: bad slot");
-  if (bytes > slot_bytes_) throw std::runtime_error("HeapFrameSink::commit: frame exceeds slot");
+  if (meta.bytes > slot_bytes_) throw std::runtime_error("HeapFrameSink::commit: frame exceeds slot");
   {
     std::lock_guard<std::mutex> lock(mutex_);
     // Anything but Idle means the transport refilled a slot still in flight,
@@ -56,8 +55,7 @@ void HeapFrameSink::commit(uint32_t slot, uint64_t timestamp_ns, std::size_t byt
     if (state_[slot] != SlotState::Idle) {
       throw std::runtime_error("HeapFrameSink::commit: slot is still in flight");
     }
-    timestamp_ns_[slot] = timestamp_ns;
-    bytes_[slot] = bytes;
+    meta_[slot] = meta;
     state_[slot] = SlotState::InFlight;
     ready_.push_back(slot);
   }
@@ -82,8 +80,7 @@ bool HeapFrameSink::pop(Frame& out, std::chrono::milliseconds timeout) {
 
   out.slot = slot;
   out.data = buffers_[slot];
-  out.bytes = bytes_[slot];
-  out.timestamp_ns = timestamp_ns_[slot];
+  out.meta = meta_[slot];
   return true;
 }
 

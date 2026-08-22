@@ -102,6 +102,29 @@ CameraConfig load_camera_config(const std::string& path) {
   return config;
 }
 
+ActionSyncConfig load_action_sync_config(const std::string& path) {
+  const YAML::Node root = loadFile(path);
+  ActionSyncConfig config;
+
+  const YAML::Node action_sync = root["action_sync"];
+  if (!action_sync) return config;
+
+  // Presence is the switch, so a section written out at all means it was meant
+  // to run; `enabled: false` is still honoured for turning it off in place.
+  config.enabled = true;
+  read(action_sync, "enabled", "action_sync", config.enabled);
+  read(action_sync, "device_key", "action_sync", config.device_key);
+  read(action_sync, "group_key", "action_sync", config.group_key);
+  read(action_sync, "group_mask", "action_sync", config.group_mask);
+  read(action_sync, "expected_hz", "action_sync", config.expected_hz);
+  read(action_sync, "lead_time_ms", "action_sync", config.lead_time_ms);
+  read(action_sync, "check_frames", "action_sync", config.check_frames);
+  read(action_sync, "tolerance_ms", "action_sync", config.tolerance_ms);
+  read(action_sync, "expected_start_offset_ms", "action_sync", config.expected_start_offset_ms);
+  read(action_sync, "ptp_wait_ms", "action_sync", config.ptp_wait_ms);
+  return config;
+}
+
 StandaloneConfig load_standalone_config(const std::string& path) {
   const YAML::Node root = loadFile(path);
   StandaloneConfig config;
@@ -111,6 +134,10 @@ StandaloneConfig load_standalone_config(const std::string& path) {
 
   read(standalone, "buffer_count", "standalone", config.buffer_count);
   read(standalone, "max_frames", "standalone", config.max_frames);
+  read(standalone, "record", "standalone", config.record);
+  read(standalone, "record_root", "standalone", config.record_root);
+  read(standalone, "staging_frames", "standalone", config.staging_frames);
+  read(standalone, "record_role", "standalone", config.record_role);
   return config;
 }
 

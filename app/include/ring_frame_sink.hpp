@@ -32,9 +32,13 @@ class RingFrameSink final : public FrameSink {
     return slot == HostIngressRing::kNoSlot ? kNoSlot : slot;
   }
 
-  void commit(uint32_t slot, uint64_t timestamp_ns, std::size_t bytes) override {
-    if (probe_) probe_->on_arrival(timestamp_ns);
-    ring_->commit_external(slot, timestamp_ns, bytes);
+  // meta.host_recv_ns and meta.frame_id are not forwarded: the ingress ring
+  // carries the camera timestamp and nothing else, and the probe wants its own
+  // reading of arrival rather than the transport's. They are there for the
+  // recorder, which taps the frame before this adapter sees it.
+  void commit(uint32_t slot, const FrameMeta& meta) override {
+    if (probe_) probe_->on_arrival(meta.timestamp_ns);
+    ring_->commit_external(slot, meta.timestamp_ns, meta.bytes);
   }
 
   bool consumed(uint32_t slot) override { return ring_->slot_consumed(slot); }

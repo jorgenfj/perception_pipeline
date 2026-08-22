@@ -1,4 +1,3 @@
-#include <Spinnaker.h>
 #include <cuda_runtime.h>
 #include <pthread.h>
 
@@ -10,7 +9,8 @@
 #include <string>
 #include <thread>
 
-#include "action_sync.hpp"
+#include "acquire_source.hpp"
+#include "action_sync_check.hpp"
 #include "app_config.hpp"
 #include "cuda_util.hpp"
 #include "device_ring_buffer.hpp"
@@ -18,7 +18,6 @@
 #include "latency_probe.hpp"
 #include "report.hpp"
 #include "ring_frame_sink.hpp"
-#include "spinnaker_source.hpp"
 #include "headless_yolo_consumer.hpp"
 #include "transforms/debayer.hpp"
 #include "upload_stage.hpp"
@@ -66,22 +65,22 @@ int main(int argc, char** argv) {
 
   const std::string config_path = argc > 1 ? argv[1] : perception::default_config_path();
 
-  Spinnaker::SystemPtr system = Spinnaker::System::GetInstance();
-  Spinnaker::CameraList cameras = system->GetCameras();
-
   int status = 0;
   try {
     const perception::AppConfig config = perception::load_app_config(config_path);
     std::printf("config: %s\n", config_path.c_str());
     std::printf("viewer: %s\n", perception::to_string(config.viewer_mode));
 
-    // ---- camera: pixels land straight in the sink's user buffers ----
-    perception::SpinnakerSource source(
-        perception::SpinnakerSource::select(cameras, config.camera.serial), config.camera);
+    // ---- source: live camera or recording ----
+    std::unique_ptr<perception::AcquireSource> acquire_source =
+        perception::make_acquire_source(config);
+    perception::FrameSource& source = acquire_source->source();
+    std::printf("source: %s -- %s\n", perception::acquire_source_kind(),
+                acquire_source->describe().c_str());
 
     const perception::CameraGeometry& geometry = source.geometry();
     const perception::ImageDesc desc = perception::to_image_desc(geometry);
-    std::printf("camera: %ux%u stride=%u %s, %zu bytes/frame, %zu bytes/buffer, min %u buffers\n",
+    std::printf("frames: %ux%u stride=%u %s, %zu bytes/frame, %zu bytes/buffer, min %u buffers\n",
                 geometry.width, geometry.height, geometry.stride_bytes,
                 geometry.pixel_format.c_str(), geometry.frame_bytes, geometry.buffer_bytes,
                 source.min_slot_count());
@@ -89,9 +88,12 @@ int main(int argc, char** argv) {
     // Read right after Init(): GevIEEE1588Status won't be Slave yet even on a
     // healthy setup (BMC takes a few Announce intervals to settle), so this is
     // "does the node exist / feature applied", not "is it locked" -- Reporter's
-    // periodic line is what confirms lock.
+    // periodic line is what confirms lock. Empty for a source with no clock.
     const std::string ptp_status = source.ptp_status();
-    if (!ptp_status.empty()) {
+    if (ptp_status.rfind("recorded:", 0) == 0) {
+      std::printf("ptp: %s (what the rig reported when this was recorded)\n",
+                  ptp_status.c_str());
+    } else if (!ptp_status.empty()) {
       std::printf("ptp: status=%s (see spinnaker/README.md if this doesn't reach Slave)\n",
                   ptp_status.c_str());
     }
@@ -192,15 +194,12 @@ int main(int argc, char** argv) {
 
     perception::CudaStream consumer;
     try {
-      source.set_failure_callback([&device_ring] { device_ring.wake_all(); });
+      source.set_finished_callback([&device_ring] { device_ring.wake_all(); });
       source.start(sink);
       upload.start();
 
-      if (config.action_sync.enabled) {
-        perception::arm_action_sync(system, source, config.action_sync, action_sync_checker);
-      }
-
-      while (!g_stop.load(std::memory_order_relaxed) && !secondary_closed() && !source.failed()) {
+      acquire_source->arm_action_sync(config.action_sync, action_sync_checker);
+      while (!g_stop.load(std::memory_order_relaxed) && !secondary_closed() && !source.finished()) {
         const uint64_t seen = device_ring.wait_seq();
 
         perception::FramePeek peek;
@@ -245,7 +244,5 @@ int main(int argc, char** argv) {
     status = 1;
   }
 
-  cameras.Clear();
-  system->ReleaseInstance();
   return status;
 }

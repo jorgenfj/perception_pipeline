@@ -1,0 +1,175 @@
+# Config for `stereo_view`, the CUDA-free stereo pair viewer and recorder.
+#
+# It reads four sections: `camera:` (the same schema camera.yaml and the
+# pipeline app use, applied to BOTH cameras), plus `streams:`, `stereo:` and
+# `recording:` below. One file, because exposure, gain, geometry and PTP are
+# rig-wide settings -- two cameras configured differently are not a stereo pair,
+# and the only thing that legitimately differs between them is the serial.
+
+# Which two cameras, and which is which.
+#
+# Leave both serials empty only if you are testing with one camera attached;
+# with a real rig, set them. Unset serials mean "first camera found", and which
+# camera that is can change between runs -- left and right would then swap
+# silently, and a recording would be mislabelled with no way to tell after the
+# fact.
+streams:
+  - role: left
+    serial: "23494258"
+  - role: right
+    serial: "23494259"
+
+stereo:
+  # The pairing tolerance. Two frames whose camera timestamps are within this of
+  # each other are the same instant.
+  #
+  # It must stay strictly under half the frame period, and that is enforced --
+  # at or above that bound two different exposures both qualify as "the same
+  # instant" and pairing stops meaning anything. At 60 Hz the bound is 8333us;
+  # 500us is sixty times inside it, and with PTP locked the observed skew is
+  # microseconds.
+  tolerance_us: 500
+
+  # Nominal frame period, used only to check tolerance_us above. Keep it in step
+  # with camera.features.AcquisitionFrameRate. 0 disables the check.
+  frame_period_us: 16667      # 60 Hz
+
+  # Frames held per stream while waiting for a partner. This is the hold window;
+  # the oldest is dropped when it is full, which is what bounds the memory.
+  queue_frames: 8
+
+  # How long a frame with no partner queued waits before it is shown unpaired.
+  # Only ever used to give up -- never to decide what pairs with what, which is
+  # camera timestamps and nothing else. Without it, one dead camera would blank
+  # the window instead of showing the live one next to a stale frame.
+  hold_ms: 200
+
+  display: true
+
+  # Bayer block per displayed pixel: 2, 4 or 8. At 2 this is one Bayer quad per
+  # pixel with no interpolation -- inspection-grade, not the pipeline's debayer.
+  # Raise it if the CPU is struggling to keep two 60 Hz streams on screen.
+  decimate: 2
+
+  window_width: 1600
+  window_height: 700
+
+  # On, unlike the pipeline's GL viewer. That one is measuring latency, and
+  # vsync would add a refresh period to the number under measurement; this one
+  # is being looked at, and tearing is worse than a frame of lag.
+  vsync: true
+
+  # Camera buffers per stream. Must be at least what the stream mode needs;
+  # stereo_view says so if it is not.
+  buffer_count: 8
+
+recording:
+  # Off by default: this is a viewer that can record, not a recorder with a
+  # preview. `r` in the window toggles it, or start with --record.
+  enabled: false
+
+  # A timestamped subdirectory is created in here per recording session.
+  #
+  # Every frame each camera delivered is written -- there is no pairs-only mode,
+  # deliberately. Pairing is a read-time merge over the camera timestamps, so
+  # the frames a gate would have discarded are exactly the evidence you need
+  # when a recording turns out to be about something other than what you were
+  # recording it for. See recording_plan.md.
+  root: recordings
+
+  # Depth of the per-stream staging ring, in frames. ~50 MB per stream at
+  # 1440x1080 Bayer8. Frames are copied into it and the camera buffer is
+  # released immediately, so a slow disk drops the recorder's own frames and
+  # counts them rather than throttling acquisition -- which would change the
+  # timing of the run being recorded.
+  staging_frames: 32
+
+# Applied to both cameras, in order, before acquisition starts. This is the same
+# `camera:` schema as camera.yaml -- see that file for what each key does.
+camera:
+  timeout_ms: 1000
+
+  features:
+    - AcquisitionMode: Continuous
+    - TriggerMode: "Off"
+
+    - PixelFormat: BayerRG8
+    - Width: 1440
+    - Height: 1080
+    - OffsetX: 0
+    - OffsetY: 0
+
+    - ExposureAuto: "Off"
+    - ExposureTime: 1000.0     # microseconds
+
+    - GainAuto: "Off"
+    - Gain: 0.0
+
+    - AcquisitionFrameRateEnable: true
+    - AcquisitionFrameRate: 7.5
+
+    # PTP is what makes any of this mean anything: without a common epoch the
+    # two cameras' timestamps are unrelated counters and nothing will pair. See
+    # spinnaker/README.md for putting the host on the network as grandmaster.
+    - GevIEEE1588: "true"
+
+    # SlaveOnly, not Auto. On Auto the camera runs the Best Master Clock
+    # election and will elect ITSELF master the moment it stops hearing
+    # Announce from the host -- so a brief gap turns into cam0 Master /
+    # cam1 Master, two self-appointed grandmasters with no common epoch, and
+    # nothing pairs until they both come back. SlaveOnly removes that branch:
+    # the camera never becomes master, it just sits in Listening until a
+    # master reappears, and the recovery is automatic.
+    #
+    # That is the right policy for this rig because the grandmaster is never
+    # supposed to be a camera -- it is the host (spinnaker/README.md). Setting
+    # it here rather than in SpinView is what makes it survive a power cycle:
+    # an interactive change is lost unless it was saved to a user set.
+    - GevIEEE1588Mode: SlaveOnly
+
+  stream_features:
+    - StreamBufferHandlingMode: NewestOnly
+
+# Scheduled AcquisitionStart: one PTP-timed Action Command that starts BOTH
+# cameras at the same instant, instead of each starting whenever it is told to.
+# Off unless enabled here; --sync-start turns it on without editing the file.
+#
+# Requires both cameras to read PTP "Slave" -- an unsynced camera acks
+# NO_REF_TIME, and stereo_view refuses rather than half-arming the rig.
+#
+# What it fixes and what it does not. It aligns the *phase* of the two streams.
+# From there each camera free-runs on its own crystal, and it is ongoing PTP
+# discipline, not this command, that holds them together: two undisciplined
+# crystals at +-50 ppm drift apart by roughly 6 ms per minute. It is also
+# checked against the cameras' own timestamps, so it proves the trigger landed
+# where it was aimed -- not that the clock doing the aiming is right. Only a
+# scene event proves that; see the note stereo_view prints at the end of a run.
+#
+# Needs these in camera.features too, or the cameras ignore the command:
+#   - TriggerSelector: AcquisitionStart
+#   - TriggerSource: Action0
+#   - TriggerMode: "On"
+action_sync:
+  enabled: false
+
+  # Must match ActionDeviceKey / ActionGroupKey / ActionGroupMask on the cameras.
+  device_key: 1
+  group_key: 1
+  group_mask: 1
+
+  # Scheduled for the next whole second at least this far ahead, so about a
+  # second after startup in practice.
+  lead_time_ms: 500.0
+
+  # Checked against the delivered timestamps. Keep expected_hz in step with
+  # camera.features.AcquisitionFrameRate above, or every frame reads as
+  # mis-spaced when the only thing wrong is this number.
+  expected_hz: 60.0
+  check_frames: 60
+  tolerance_ms: 2.0
+
+  # GetTimeStamp()'s latch point relative to the trigger is a sensor convention:
+  # a camera latching at end-of-exposure reports a start offset equal to
+  # ExposureTime, which is not a sync failure. Measure it once, set it here, and
+  # the verdict then checks precision rather than an unrelated constant.
+  expected_start_offset_ms: 0.0

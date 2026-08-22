@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
+#include <iomanip>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -244,6 +245,26 @@ std::string SpinnakerSource::ptp_status() {
   return currentEnum(nodes, "GevIEEE1588Status");
 }
 
+SpinnakerSource::ActionKeys SpinnakerSource::action_keys(uint32_t& device_key,
+                                                         uint32_t& group_key,
+                                                         uint32_t& group_mask) {
+  INodeMap& nodes = camera_->GetNodeMap();
+  const CIntegerPtr device = nodes.GetNode("ActionDeviceKey");
+  const CIntegerPtr group = nodes.GetNode("ActionGroupKey");
+  const CIntegerPtr mask = nodes.GetNode("ActionGroupMask");
+
+  if (!device.IsValid() || !group.IsValid() || !mask.IsValid()) return ActionKeys::Absent;
+
+  if (!IsReadable(device) || !IsReadable(group) || !IsReadable(mask)) {
+    return ActionKeys::WriteOnly;
+  }
+
+  device_key = static_cast<uint32_t>(device->GetValue());
+  group_key = static_cast<uint32_t>(group->GetValue());
+  group_mask = static_cast<uint32_t>(mask->GetValue());
+  return ActionKeys::Readable;
+}
+
 bool SpinnakerSource::ptp_offset_ns(int64_t& out) {
   INodeMap& nodes = camera_->GetNodeMap();
   const CIntegerPtr value = nodes.GetNode("GevIEEE1588OffsetFromMaster");
@@ -264,6 +285,30 @@ std::string SpinnakerSource::incomplete_breakdown() const {
     first = false;
     out << incompleteStatusName(static_cast<Spinnaker::ImageStatus>(status)) << '=' << count;
   }
+  return out.str();
+}
+
+std::string SpinnakerSource::counters() const {
+  std::ostringstream out;
+  out << "incomplete=" << incomplete() << " foreign=" << foreign() << " timeouts=" << timeouts();
+  return out.str();
+}
+
+std::string SpinnakerSource::notes() const {
+  std::ostringstream out;
+  if (incomplete()) out << '(' << incomplete_breakdown() << ')';
+  if (reconnects()) {
+    if (out.tellp() > 0) out << ' ';
+    out << "reconnects=" << reconnects();
+  }
+  return out.str();
+}
+
+std::string SpinnakerSource::pool_line(uint32_t depth) const {
+  std::ostringstream out;
+  out << "pool " << held() << '/' << depth << " held peak=" << held_peak()
+      << " starved=" << starved() << " reclaimed=" << reclaimed() << " hold mean/max "
+      << std::fixed << std::setprecision(1) << hold_mean_us() << '/' << hold_max_us() << " us";
   return out.str();
 }
 
@@ -351,9 +396,9 @@ void SpinnakerSource::fail(std::string reason) {
   if (failed_.load(std::memory_order_relaxed)) return;
   failure_ = std::move(reason);
   failed_.store(true, std::memory_order_release);
-  if (on_failure_) {
+  if (on_finished_) {
     try {
-      on_failure_();
+      on_finished_();
     } catch (...) {
     }
   }
@@ -504,6 +549,7 @@ std::string SpinnakerSource::grab_loop(FrameSink& sink) {
       }
 
       Spinnaker::ImagePtr image = camera_->GetNextImage(config_.timeout_ms);
+      const uint64_t host_recv_ns = host_now_ns();
 
       if (image->IsIncomplete()) {
         const Spinnaker::ImageStatus status = image->GetImageStatus();
@@ -531,7 +577,12 @@ std::string SpinnakerSource::grab_loop(FrameSink& sink) {
       if (!held_[slot]) held_now_.fetch_add(1, std::memory_order_relaxed);
       held_[slot] = image;
       held_since_[slot] = std::chrono::steady_clock::now();
-      sink.commit(slot, image->GetTimeStamp(), geometry_.frame_bytes);
+      FrameMeta meta;
+      meta.timestamp_ns = image->GetTimeStamp();
+      meta.host_recv_ns = host_recv_ns;
+      meta.frame_id = static_cast<uint32_t>(image->GetFrameID());
+      meta.bytes = geometry_.frame_bytes;
+      sink.commit(slot, meta);
       delivered_.fetch_add(1, std::memory_order_relaxed);
     } catch (const Spinnaker::Exception& e) {
       // A timeout is both an idle camera and a pool held empty by a backed-up

@@ -226,15 +226,69 @@ purely by the camera's own free-running timer, nothing external. Run this
 before adding the second camera; a single camera alone is a complete test of
 "did the scheduled trigger land where it should."
 
+## Seeing it work: `stereo_view`
+
+`stereo_view` is the CUDA-free stereo viewer and recorder. It opens both
+cameras, pairs their frames by camera timestamp, shows the two halves side by
+side with the pair's skew under them, and can write everything both cameras
+delivered to disk. Nothing in it links CUDA, so it runs on a machine with no
+GPU -- and `--play` needs neither a GPU nor the Spinnaker SDK, which is how a
+recording gets looked at on a laptop.
+
+```bash
+./build/bin/stereo_view                       # both cameras, live
+./build/bin/stereo_view --record              # ... and record from the start
+./build/bin/stereo_view --play recordings/recording-2026-08-21T13-22-04
+./build/bin/stereo_view --info recordings/recording-2026-08-21T13-22-04
+```
+
+In the window: `space` pauses, `r` toggles recording, `q` quits. Config is
+`tools/stereo_view/config/stereo.yaml`; see the comments in it for the pairing
+tolerance and the recording settings.
+
+This is the tool that answers "is the rig synced" directly, and it is worth
+running before the GPU pipeline is worth starting:
+
+```
+stereo paired=1204 unpaired=0/2 dropped=0/0 max_skew=41us pairs/s=59.9
+```
+
+`paired` climbing with `unpaired` flat is a synced rig. `max_skew` is the worst
+gap inside any pair -- microseconds once PTP is locked and Scheduled Action
+Commands are armed. **`paired=0` is the expected result with PTP unlocked**:
+free-running cameras share no epoch, so their timestamps are unrelated counters
+and nothing can pair. Check `ptp` in the startup line before suspecting the
+tolerance.
+
+### What the recording is
+
+Every frame each camera delivered, per stream, plus a 32-byte index record per
+frame carrying both the camera timestamp and the host receive time. No pairing
+is stored -- pairing is a merge over the camera timestamps done at read time,
+so a six-month-old recording can be re-paired at a different tolerance to
+answer a question you did not know you had. `--info` does exactly that, and
+prints the drift of `host_recv - timestamp` across the file, which is a
+measurement of whether PTP was actually disciplining rather than a claim that
+it was.
+
+Frames are copied out of the camera buffer into a bounded staging ring, so a
+disk that cannot keep up drops the recorder's own frames and counts them
+(`rec drops=`) rather than throttling acquisition. That matters: a recorder
+that backs up into the camera would change the timing of the run it is
+recording. See `recording_plan.md`.
+
 ## Gotchas
 
 - **TAI vs UTC.** PTP's epoch is TAI, not UTC. Expect camera timestamps to
   sit ~37s off `CLOCK_REALTIME` (the current leap-second count) unless
   something in the chain accounts for it. Don't confuse this constant offset
   with a sync failure.
-- **`latency_probe.hpp` reads `steady_clock`, not `CLOCK_REALTIME`.**
-  `LatencyProbe::host_now_ns()` is deliberately monotonic and untouched by
-  wall-clock adjustments -- exactly the wrong clock once PTP is disciplining
-  `CLOCK_REALTIME`. Wiring PTP-synced timestamps into the pipeline needs that
-  call switched to a `CLOCK_REALTIME`-based read, or the two ends still won't
-  share an epoch despite PTP running correctly underneath.
+- **Host stamps are `CLOCK_REALTIME`, and must stay that way.**
+  `LatencyProbe::host_now_ns()` and `host_now_ns()` in
+  `capture/include/frame_sink.hpp` are both `system_clock`, deliberately: a
+  monotonic clock shares no epoch with a PTP-disciplined camera, so
+  `host_recv_ns - timestamp_ns` would stop being transport latency and start
+  being a meaningless difference of two unrelated counters. Two *different*
+  host clocks would be just as bad -- they would disagree by microseconds and
+  make the same subtraction lie. If either is ever switched to `steady_clock`,
+  the recording index and the latency probe both stop meaning anything.

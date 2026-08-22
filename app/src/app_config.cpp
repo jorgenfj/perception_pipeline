@@ -1,5 +1,7 @@
 #include "app_config.hpp"
 
+#include "config_path.hpp"
+
 #include <yaml-cpp/yaml.h>
 
 #include <filesystem>
@@ -128,24 +130,36 @@ AppConfig load_app_config(const std::string& path) {
     read(yolo, "conf_threshold", "yolo", config.yolo.conf_threshold);
   }
 
-  if (const YAML::Node action_sync = root["action_sync"]) {
-    config.action_sync.enabled = true;
-    read(action_sync, "device_key", "action_sync", config.action_sync.device_key);
-    read(action_sync, "group_key", "action_sync", config.action_sync.group_key);
-    read(action_sync, "group_mask", "action_sync", config.action_sync.group_mask);
-    read(action_sync, "expected_hz", "action_sync", config.action_sync.expected_hz);
-    read(action_sync, "lead_time_ms", "action_sync", config.action_sync.lead_time_ms);
-    read(action_sync, "check_frames", "action_sync", config.action_sync.check_frames);
-    read(action_sync, "tolerance_ms", "action_sync", config.action_sync.tolerance_ms);
-    read(action_sync, "expected_start_offset_ms", "action_sync",
-         config.action_sync.expected_start_offset_ms);
+  // Only consulted by a -DPERCEPTION_SOURCE=recording build, but always parsed:
+  // one config file has to describe both, or switching source means editing the
+  // config as well as reconfiguring and the two versions drift apart.
+  if (const YAML::Node source = root["source"]) {
+    read(source, "recording", "source", config.source.directory);
+    read(source, "stream", "source", config.source.stream);
+    read(source, "role", "source", config.source.role);
+    read(source, "speed", "source", config.source.speed);
+    read(source, "loop", "source", config.source.loop);
+    read(source, "rebase_timestamps", "source", config.source.rebase_timestamps);
+    read(source, "slot_wait_ms", "source", config.source.slot_wait_ms);
   }
+
+  // Parsed by the camera schema, not here: stereo_view reads the same section,
+  // and two parsers for one section is how they end up disagreeing.
+  config.action_sync = load_action_sync_config(path);
 
   config.upload.device_id = config.pipeline.device_id;
   return config;
 }
 
-std::string default_config_path() { return (exe_dir() / "config" / "acquire.yaml").string(); }
+// Compiled in by app/CMakeLists.txt; see capture/include/config_path.hpp for
+// why the config is found rather than copied into bin/.
+#ifndef PERCEPTION_CONFIG_DIR
+#define PERCEPTION_CONFIG_DIR ""
+#endif
+
+std::string default_config_path() {
+  return resolve_config_path("acquire.yaml", PERCEPTION_CONFIG_DIR);
+}
 
 std::string resolve_next_to_exe(const std::string& path) {
   if (path.empty() || std::filesystem::path(path).is_absolute()) return path;

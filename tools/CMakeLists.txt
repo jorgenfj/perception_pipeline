@@ -1,0 +1,2 @@
+add_subdirectory(spin_acquire)
+add_subdirectory(stereo_view)

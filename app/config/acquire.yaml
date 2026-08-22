@@ -2,9 +2,6 @@
 # anything omitted falls back to the defaults in app_config.hpp, and any node
 # not listed stays at whatever the camera already had.
 #
-# The `camera:` section is the same schema spinnaker/ defines and parses -- see
-# spinnaker/config/camera.yaml, which the standalone `spin_acquire` reads. Both
-# tools accept either file; each ignores the sections it does not own.
 
 camera:
   # Empty picks the first camera found. Set it once there is more than one rig.
@@ -43,7 +40,7 @@ camera:
 
     # GigE link tuning. Jumbo frames need the NIC MTU raised to match, and the
     # throughput limit is what stops the camera outrunning the link.
-    # - GevSCPSPacketSize: 9000
+    - GevSCPSPacketSize: 9000
     # - GevSCPD: 4000
     # - DeviceLinkThroughputLimit: 85000000
 
@@ -65,12 +62,41 @@ camera:
   stream_features:
     - StreamBufferHandlingMode: NewestOnly
 
+# This source section is only read when -DPERCEPTION_SOURCE=recording.
+source:
+  recording: ""
+
+  # Which half of a stereo recording to feed the pipeline. `role` wins if set;
+  # naming it is safer than the index, which is just the order the recorder
+  # happened to open the cameras in.
+  role: "left"
+  stream: 0
+
+  # Replay rate. Above 1.0 this is a load knob as much as a time one -- it
+  # raises the frame rate the pipeline has to keep up with.
+  speed: 1.0
+
+  # Restart at the end rather than ending the run.
+  loop: true
+
+  # Shift timestamps onto the current wall clock, preserving every interval
+  # exactly. On, because LatencyProbe measures latency as now - timestamp: with
+  # the file's original stamps a recording made last week reports a week of
+  # latency and every latency number in the report becomes noise. Turn it off
+  # only to push the recorded stamps through verbatim.
+  rebase_timestamps: true
+
+  # How long a frame waits for a free ingress slot before it is given up on.
+  # Frames dropped here mean the pipeline is slower than the recorded rate,
+  # which is a finding rather than something to tune away.
+  slot_wait_ms: 500
+
 pipeline:
   # The ingress ring IS the camera's buffer pool on this path, so its depth has
   # to cover full upload latency, not just the grab -- a slot only comes back
   # once its H2D has retired. Too shallow shows up as `timeouts` climbing.
   ingress_depth: 8
-  device_depth: 4
+  device_depth: 6
   max_consumers: 2
   device_id: 0
 
@@ -80,7 +106,7 @@ pipeline:
 
   # RoundRobin is required if upload.use_graph is on -- ScanForFree picks slots
   # from runtime lease state, so a graph cannot bake the index.
-  write_policy: RoundRobin
+  write_policy: ScanForFree
 
 # Which consumer owns the device ring's secondary slot:
 #   camera   -- raw frames only, no inference (ViewerConsumer)

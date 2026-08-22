@@ -7,7 +7,7 @@
 #include "device_ring_buffer.hpp"
 #include "latency_probe.hpp"
 #include "ring_lease.hpp"
-#include "spinnaker_source.hpp"
+#include "frame_source.hpp"
 #include "upload_stage.hpp"
 
 namespace perception {
@@ -55,7 +55,9 @@ class Reporter {
   // `ptp_status_at_start` is the one-shot Init()-time read the caller already
   // did to print the startup line; kept here only to gate whether the ptp
   // segment ever prints -- a camera without PTP support stays empty forever.
-  Reporter(SpinnakerSource& source, UploadStage& upload, DeviceRingBuffer& device_ring,
+  // A FrameSource and not a camera: the counters that differ between the two
+  // arrive already formatted, through FrameSource::counters() and notes().
+  Reporter(FrameSource& source, UploadStage& upload, DeviceRingBuffer& device_ring,
            LatencyProbe& probe, const AppConfig& config, std::string ptp_status_at_start);
 
   // Call once per consumed frame; prints a line every 60th call.
@@ -69,7 +71,7 @@ class Reporter {
 
   void print(uint64_t consumed, const ReadLease& lease);
 
-  SpinnakerSource* source_;
+  FrameSource* source_;
   UploadStage* upload_;
   DeviceRingBuffer* device_ring_;
   LatencyProbe* probe_;

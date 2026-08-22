@@ -14,6 +14,7 @@
 
 #include "camera_config.hpp"
 #include "frame_sink.hpp"
+#include "frame_source.hpp"
 
 namespace perception {
 
@@ -28,12 +29,12 @@ namespace perception {
 // sink says the reader is done, because releasing it lets the camera refill a
 // slot still in use. The pool must therefore be deep enough to cover full read
 // latency, and running dry shows up as timeouts rather than as a stall.
-class SpinnakerSource {
+class SpinnakerSource final : public FrameSource {
  public:
   // Init()s the camera and applies `config.features`, so geometry is readable
   // immediately -- the sink is sized from geometry().buffer_bytes.
   SpinnakerSource(Spinnaker::CameraPtr camera, CameraConfig config);
-  ~SpinnakerSource();
+  ~SpinnakerSource() override;
 
   SpinnakerSource(const SpinnakerSource&) = delete;
   SpinnakerSource& operator=(const SpinnakerSource&) = delete;
@@ -42,7 +43,7 @@ class SpinnakerSource {
   // serial is empty. Throws if there is no match.
   static Spinnaker::CameraPtr select(Spinnaker::CameraList& cameras, const std::string& serial);
 
-  const CameraGeometry& geometry() const { return geometry_; }
+  const CameraGeometry& geometry() const override { return geometry_; }
 
   // Breakdown of incomplete() by Spinnaker::ImageStatus, e.g.
   // "missing_packets=520 data_incomplete=40 crc=8" -- empty if incomplete() is
@@ -52,13 +53,13 @@ class SpinnakerSource {
   std::string incomplete_breakdown() const;
 
   // Minimum slot count the configured stream mode accepts as user buffers.
-  uint32_t min_slot_count() const { return min_slots_; }
+  uint32_t min_slot_count() const override { return min_slots_; }
 
   // `sink` must outlive the source and have slots of at least
   // geometry().buffer_bytes. Binds its buffers as the camera's and starts
   // acquiring.
-  void start(FrameSink& sink);
-  void stop();
+  void start(FrameSink& sink) override;
+  void stop() override;
 
   // True only once the acquisition thread has *given up* -- reconnect is
   // disabled or its attempt budget ran out. A camera error on its own does not
@@ -66,7 +67,10 @@ class SpinnakerSource {
   // thread is gone when this is set, so no further frames will ever be
   // committed; it is the signal for whoever owns the pipeline to shut down
   // rather than block forever waiting on a publish that cannot come.
-  bool failed() const { return failed_.load(std::memory_order_acquire); }
+  bool failed() const override { return failed_.load(std::memory_order_acquire); }
+
+  // A camera has no other way to end: it either keeps delivering or it gave up.
+  bool finished() const override { return failed(); }
 
   // True while the stream is down and the source is trying to get it back.
   bool reconnecting() const { return reconnecting_.load(std::memory_order_relaxed); }
@@ -78,27 +82,45 @@ class SpinnakerSource {
 
   // Why it stopped -- only meaningful once failed() is true, which is also what
   // publishes this string (written before the flag, read after it).
-  const std::string& failure() const { return failure_; }
+  const std::string& failure() const override { return failure_; }
 
   // Invoked once, on the acquisition thread, immediately after failed() is set.
   // Exists so the owner can kick whatever it is parked on -- e.g.
   // DeviceRingBuffer::wake_all() -- instead of waiting out a publish that will
   // never arrive. Must be set before start(). Anything it throws is swallowed:
   // this runs on a thread whose whole point right now is to die quietly.
-  void set_failure_callback(std::function<void()> cb) { on_failure_ = std::move(cb); }
+  void set_finished_callback(std::function<void()> cb) override { on_finished_ = std::move(cb); }
 
   // GevIEEE1588Status off the node map ("Slave" once locked to a master), or
   // "" if this camera doesn't expose PTP at all. A live GVCP register read,
   // not cached -- call sparingly (a startup check, or every N frames), not
   // per-frame.
-  std::string ptp_status();
+  std::string ptp_status() override;
+
+  enum class ActionKeys {
+    Absent,     // no such nodes: this model cannot take Action Commands at all
+    WriteOnly,  // present but not readable, which is the normal case
+    Readable,   // present and readable, so the values can be verified
+  };
+
+  // The camera's Action Command keys, as it will check them against an incoming
+  // broadcast.
+  //
+  // Usually WriteOnly, and that is not a fault: they are keys, so the camera
+  // accepts a value and declines to hand it back. Absent is the real negative
+  // answer -- the model has no action machinery and a scheduled start is not
+  // available on it.
+  //
+  // Worth asking before sending rather than after, because a key mismatch is
+  // not an error anywhere, it is silence.
+  ActionKeys action_keys(uint32_t& device_key, uint32_t& group_key, uint32_t& group_mask);
 
   // GevIEEE1588OffsetFromMaster in nanoseconds. Only meaningful once
   // ptp_status() == "Slave"; false if the node isn't readable (including:
   // camera has no PTP support at all).
-  bool ptp_offset_ns(int64_t& out);
+  bool ptp_offset_ns(int64_t& out) override;
 
-  uint64_t delivered() const { return delivered_.load(std::memory_order_relaxed); }
+  uint64_t delivered() const override { return delivered_.load(std::memory_order_relaxed); }
   uint64_t incomplete() const { return incomplete_.load(std::memory_order_relaxed); }
 
   // Frames whose buffer was not one of the sink's: the transport declined the
@@ -118,6 +140,12 @@ class SpinnakerSource {
   // Grab passes entered with every slot held, so the transport could not have
   // delivered whatever it did next. Each one costs a full grab timeout.
   uint64_t starved() const { return starved_.load(std::memory_order_relaxed); }
+
+  // FrameSource's reporting hooks: these only format the typed counters above
+  // for a report line that cannot know what a Spinnaker counter is.
+  std::string counters() const override;
+  std::string notes() const override;
+  std::string pool_line(uint32_t depth) const override;
 
   // Handles returned to the transport, and how long they were held. The mean is
   // over reclaimed handles only -- anything still held is not in it yet.
@@ -186,7 +214,7 @@ class SpinnakerSource {
   std::atomic<bool> failed_{false};
   std::atomic<bool> reconnecting_{false};
   std::atomic<uint64_t> reconnects_{0};
-  std::function<void()> on_failure_;
+  std::function<void()> on_finished_;
   std::atomic<uint64_t> delivered_{0};
   std::atomic<uint64_t> incomplete_{0};
   std::array<std::atomic<uint64_t>, 16> incomplete_by_status_{};

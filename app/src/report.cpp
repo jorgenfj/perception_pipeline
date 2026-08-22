@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <string>
 
 namespace perception {
 
@@ -37,7 +38,7 @@ void SpacingWindow::reset() {
   count = 0;
 }
 
-Reporter::Reporter(SpinnakerSource& source, UploadStage& upload, DeviceRingBuffer& device_ring,
+Reporter::Reporter(FrameSource& source, UploadStage& upload, DeviceRingBuffer& device_ring,
                    LatencyProbe& probe, const AppConfig& config, std::string ptp_status_at_start)
     : source_(&source),
       upload_(&upload),
@@ -61,17 +62,14 @@ void Reporter::observe(uint64_t consumed, const ReadLease& lease) {
 }
 
 void Reporter::print(uint64_t consumed, const ReadLease& lease) {
-  std::printf("t=%luns slot=%u delivered=%lu uploaded=%lu consumed=%lu "
-              "incomplete=%lu foreign=%lu timeouts=%lu stalls=%lu dropped=%lu failed=%lu",
-              lease.timestamp_ns(), lease.slot(), source_->delivered(), upload_->uploaded(),
-              consumed, source_->incomplete(), source_->foreign(), source_->timeouts(),
-              device_ring_->write_stalls(), upload_->dropped(), upload_->failed());
-  if (source_->incomplete()) {
-    std::printf(" (%s)", source_->incomplete_breakdown().c_str());
-  }
-  if (source_->reconnects()) {
-    std::printf(" reconnects=%lu", source_->reconnects());
-  }
+  std::printf("t=%luns slot=%u delivered=%lu uploaded=%lu consumed=%lu ", lease.timestamp_ns(),
+              lease.slot(), source_->delivered(), upload_->uploaded(), consumed);
+  const std::string counters = source_->counters();
+  if (!counters.empty()) std::printf("%s ", counters.c_str());
+  std::printf("stalls=%lu dropped=%lu failed=%lu", device_ring_->write_stalls(),
+              upload_->dropped(), upload_->failed());
+  const std::string notes = source_->notes();
+  if (!notes.empty()) std::printf(" %s", notes.c_str());
 
   double raw_min_ms = 0.0, raw_mean_ms = 0.0, raw_max_ms = 0.0;
   if (probe_->raw_snapshot_reset(raw_min_ms, raw_mean_ms, raw_max_ms)) {
@@ -96,32 +94,25 @@ void Reporter::print(uint64_t consumed, const ReadLease& lease) {
     }
   }
 #ifdef PERCEPTION_TRACE_POOL
-  std::printf(" | pool %u/%u held peak=%u starved=%lu hold mean/max %.1f/%lu us", source_->held(),
-              config_->pipeline.ingress_depth, source_->held_peak(), source_->starved(),
-              source_->hold_mean_us(), source_->hold_max_us());
+  const std::string pool = source_->pool_line(config_->pipeline.ingress_depth);
+  if (!pool.empty()) std::printf(" | %s", pool.c_str());
 #endif
   std::printf("\n");
   latency_.reset();
 }
 
 void Reporter::print_summary(uint64_t consumed) const {
-  std::printf("\ndelivered=%lu uploaded=%lu consumed=%lu incomplete=%lu foreign=%lu "
-              "timeouts=%lu stalls=%lu dropped=%lu failed=%lu\n",
-              source_->delivered(), upload_->uploaded(), consumed, source_->incomplete(),
-              source_->foreign(), source_->timeouts(), device_ring_->write_stalls(),
+  std::printf("\ndelivered=%lu uploaded=%lu consumed=%lu ", source_->delivered(),
+              upload_->uploaded(), consumed);
+  const std::string counters = source_->counters();
+  if (!counters.empty()) std::printf("%s ", counters.c_str());
+  std::printf("stalls=%lu dropped=%lu failed=%lu\n", device_ring_->write_stalls(),
               upload_->dropped(), upload_->failed());
-  if (source_->incomplete()) {
-    std::printf("incomplete breakdown: %s\n", source_->incomplete_breakdown().c_str());
-  }
-  if (source_->reconnects()) {
-    std::printf("camera reconnects: %lu\n", source_->reconnects());
-  }
+  const std::string notes = source_->notes();
+  if (!notes.empty()) std::printf("%s\n", notes.c_str());
 #ifdef PERCEPTION_TRACE_POOL
-  std::printf("pool: depth=%u peak=%u still-held=%u starved=%lu reclaimed=%lu "
-              "hold mean/max %.1f/%lu us\n",
-              config_->pipeline.ingress_depth, source_->held_peak(), source_->held(),
-              source_->starved(), source_->reclaimed(), source_->hold_mean_us(),
-              source_->hold_max_us());
+  const std::string pool = source_->pool_line(config_->pipeline.ingress_depth);
+  if (!pool.empty()) std::printf("%s\n", pool.c_str());
 #endif
 }
 

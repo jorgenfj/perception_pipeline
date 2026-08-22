@@ -30,7 +30,7 @@ class HeapFrameSink final : public FrameSink {
   std::size_t slot_bytes() const override { return slot_bytes_; }
   void* const* buffers() const override { return buffers_.data(); }
   uint32_t slot_of(const void* ptr) const override;
-  void commit(uint32_t slot, uint64_t timestamp_ns, std::size_t bytes) override;
+  void commit(uint32_t slot, const FrameMeta& meta) override;
   bool consumed(uint32_t slot) override;
 
   // --- reader side ---
@@ -38,8 +38,7 @@ class HeapFrameSink final : public FrameSink {
   struct Frame {
     uint32_t slot = kNoSlot;
     const void* data = nullptr;
-    std::size_t bytes = 0;
-    uint64_t timestamp_ns = 0;
+    FrameMeta meta;
   };
 
   // Oldest committed slot. Blocks up to `timeout`; false on timeout or stop.
@@ -57,8 +56,7 @@ class HeapFrameSink final : public FrameSink {
 
   std::size_t slot_bytes_;
   std::vector<void*> buffers_;
-  std::vector<std::size_t> bytes_;
-  std::vector<uint64_t> timestamp_ns_;
+  std::vector<FrameMeta> meta_;
   std::vector<SlotState> state_;
 
   mutable std::mutex mutex_;
