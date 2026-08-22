@@ -75,12 +75,58 @@ YoloEngine::~YoloEngine() {
 }
 
 void YoloEngine::enqueue(cudaTextureObject_t texture, cudaStream_t stream) {
-  cuda_error_check(cudaEventRecord(process_start_, stream), "YoloEngine: cudaEventRecord start");
+  Timing& timing = timing_[enqueued_ % kTimingSlots];
+  timing.armed = false;
+  timing.drawn = false;
+
+  cuda_error_check(cudaEventRecord(timing.pre_start, stream),
+                   "YoloEngine: cudaEventRecord pre_start");
   preprocess_.enqueue(texture, source_desc_.width, source_desc_.height,
                      static_cast<float*>(input_device_), stream);
+  cuda_error_check(cudaEventRecord(timing.infer_start, stream),
+                   "YoloEngine: cudaEventRecord infer_start");
   engine_->enqueue(stream);
-  cuda_error_check(cudaEventRecord(process_end_, stream), "YoloEngine: cudaEventRecord end");
-  have_process_events_ = true;
+  cuda_error_check(cudaEventRecord(timing.infer_end, stream),
+                   "YoloEngine: cudaEventRecord infer_end");
+
+  timing.armed = true;
+  ++enqueued_;
+}
+
+bool YoloEngine::last_timing(FrameTiming& out) const {
+  // Newest first. Anything older has necessarily retired too, so the first
+  // complete slot found is also the freshest usable one.
+  for (uint64_t back = 1; back <= kTimingSlots && back <= enqueued_; ++back) {
+    const Timing& timing = timing_[(enqueued_ - back) % kTimingSlots];
+    if (!timing.armed) continue;
+
+    // A slot enqueued but not yet drawn measures to inference; on the newest
+    // slot that can mean the draw is merely still to come, but that slot is
+    // almost never complete anyway, so it gets skipped below.
+    const cudaEvent_t last = timing.drawn ? timing.draw_end.get() : timing.infer_end.get();
+    if (cudaEventQuery(last) != cudaSuccess) {
+      cudaGetLastError();  // swallow the cudaErrorNotReady we just provoked
+      continue;
+    }
+
+    float pre_ms = 0.0f;
+    float infer_ms = 0.0f;
+    float total_ms = 0.0f;
+    if (cudaEventElapsedTime(&pre_ms, timing.pre_start, timing.infer_start) != cudaSuccess ||
+        cudaEventElapsedTime(&infer_ms, timing.infer_start, timing.infer_end) != cudaSuccess ||
+        cudaEventElapsedTime(&total_ms, timing.pre_start, last) != cudaSuccess) {
+      cudaGetLastError();
+      continue;
+    }
+
+    out.preprocess_ms = static_cast<double>(pre_ms);
+    out.inference_ms = static_cast<double>(infer_ms);
+    out.total_ms = static_cast<double>(total_ms);
+    out.included_draw = timing.drawn;
+    out.index = enqueued_ - back;
+    return true;
+  }
+  return false;
 }
 
 std::vector<Detection> YoloEngine::decode(cudaStream_t stream) {
@@ -126,6 +172,18 @@ void YoloEngine::draw_into(cudaSurfaceObject_t surface, cudaStream_t stream) {
   draw_detections(static_cast<const float*>(output_device_), static_cast<uint32_t>(max_detections_),
                  config_.conf_threshold, lb.scale, lb.pad_x, lb.pad_y, source_desc_.width,
                  source_desc_.height, surface, stream);
+
+  // Closes the timing for the enqueue() this draw belongs to. Callers that
+  // never draw -- decode(), the device-output path -- simply leave total_ms
+  // ending at inference, which included_draw reports.
+  if (enqueued_ > 0) {
+    Timing& timing = timing_[(enqueued_ - 1) % kTimingSlots];
+    if (timing.armed) {
+      cuda_error_check(cudaEventRecord(timing.draw_end, stream),
+                       "YoloEngine: cudaEventRecord draw_end");
+      timing.drawn = true;
+    }
+  }
 }
 
 }  // namespace perception

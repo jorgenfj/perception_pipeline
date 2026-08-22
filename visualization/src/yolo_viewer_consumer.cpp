@@ -18,6 +18,22 @@ namespace {
 constexpr double kPollSeconds = 0.005;
 constexpr uint64_t kReportEvery = 60;
 
+struct Spread {
+  double min = 0.0;
+  double max = 0.0;
+  double sum = 0.0;
+  uint64_t n = 0;
+
+  void add(double ms) {
+    if (n == 0 || ms < min) min = ms;
+    if (n == 0 || ms > max) max = ms;
+    sum += ms;
+    ++n;
+  }
+  double mean() const { return n != 0 ? sum / static_cast<double>(n) : 0.0; }
+  void reset() { *this = Spread{}; }
+};
+
 YoloEngine::Config to_engine_config(const YoloConfig& config, int device_id) {
   YoloEngine::Config engine_config;
   engine_config.engine_path = config.engine_path;
@@ -42,7 +58,6 @@ struct YoloViewerConsumer::Impl {
   std::thread thread;
   std::atomic<bool> running{false};
   std::atomic<bool> closed{false};
-  double last_process_ms = -1.0;
   uint64_t last_report_ns = 0;
 
   Impl(DeviceRingBuffer& ring_ref, const LatencyProbe& probe_ref, const ImageDesc& desc_in,
@@ -98,6 +113,9 @@ struct YoloViewerConsumer::Impl {
     CudaStream stream;
     uint32_t last_slot = ~0u;
     uint64_t last_seq = ~0ull;
+    Spread infer_ms;
+    Spread total_ms;
+    uint64_t last_timing_index = 0;
     last_report_ns = LatencyProbe::host_now_ns();
 
     try {
@@ -126,8 +144,15 @@ struct YoloViewerConsumer::Impl {
         }
 
         if (engine) {
-          double process_ms = 0.0;
-          if (engine->process_ms(process_ms)) last_process_ms = process_ms;
+          YoloEngine::FrameTiming timing;
+          // The same cycle coming back twice just means the GPU has not
+          // finished another one since the last look.
+          if (engine->last_timing(timing) &&
+              (infer_ms.n == 0 || timing.index != last_timing_index)) {
+            last_timing_index = timing.index;
+            infer_ms.add(timing.inference_ms);
+            total_ms.add(timing.total_ms);
+          }
 
           engine->enqueue(lease.texture(), stream);
           viewer->present_gpu_boxes(lease.data(), stream, latency_ms,
@@ -145,8 +170,16 @@ struct YoloViewerConsumer::Impl {
           last_report_ns = now_ns;
 
           std::printf("display: fps=%.2f", fps);
-          if (engine) std::printf(" | yolo process=%.2fms", last_process_ms);
+          if (infer_ms.n != 0) {
+            std::printf(" | yolo infer min/mean/max %.1f/%.1f/%.1f ms"
+                       " | yolo-total min/mean/max %.1f/%.1f/%.1f ms (n=%llu)",
+                       infer_ms.min, infer_ms.mean(), infer_ms.max, total_ms.min,
+                       total_ms.mean(), total_ms.max,
+                       static_cast<unsigned long long>(infer_ms.n));
+          }
           std::printf("\n");
+          infer_ms.reset();
+          total_ms.reset();
         }
         // Lease goes out of scope and destructor returns the slot
       }

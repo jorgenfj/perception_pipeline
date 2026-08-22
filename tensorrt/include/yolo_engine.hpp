@@ -2,6 +2,7 @@
 
 #include <cuda_runtime.h>
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -86,15 +87,19 @@ class YoloEngine {
 
   double last_infer_ms() const { return last_infer_ms_; }
 
-  // GPU time for the most recently *completed* enqueue() call
-  bool process_ms(double& out_ms) const {
-    if (!have_process_events_) return false;
-    if (cudaEventQuery(process_end_) != cudaSuccess) return false;
-    float ms = 0.0f;
-    if (cudaEventElapsedTime(&ms, process_start_, process_end_) != cudaSuccess) return false;
-    out_ms = static_cast<double>(ms);
-    return true;
-  }
+  struct FrameTiming {
+    double preprocess_ms = 0.0;  // texture read + letterbox into the input tensor
+    double inference_ms = 0.0;   // TensorRT execution, and nothing else
+    double total_ms = 0.0;       // preprocess start through the end of drawing
+    bool included_draw = false;  // false means total_ms stops at inference
+    uint64_t index = 0;          // which enqueue() cycle this describes, for dedup
+  };
+
+  // Most recent cycle that has actually retired on the device, which is not the
+  // most recent one enqueued: the host normally runs a frame or more ahead of
+  // the stream.
+  // False until at least one cycle has completed.
+  bool last_timing(FrameTiming& out) const;
 
  private:
   ImageDesc source_desc_;
@@ -113,9 +118,21 @@ class YoloEngine {
 
   double last_infer_ms_ = 0.0;
 
-  CudaEvent process_start_{cudaEventDefault};
-  CudaEvent process_end_{cudaEventDefault};
-  bool have_process_events_ = false;
+  // Deep enough to outlast any sane host-ahead-of-GPU gap; the events are cheap
+  // and only completed slots are ever read.
+  static constexpr std::size_t kTimingSlots = 8;
+
+  struct Timing {
+    CudaEvent pre_start{cudaEventDefault};
+    CudaEvent infer_start{cudaEventDefault};
+    CudaEvent infer_end{cudaEventDefault};
+    CudaEvent draw_end{cudaEventDefault};
+    bool armed = false;  // enqueue() has recorded into this slot
+    bool drawn = false;  // ... and draw_into() closed it
+  };
+
+  std::array<Timing, kTimingSlots> timing_;
+  uint64_t enqueued_ = 0;
 };
 
 }  // namespace perception
