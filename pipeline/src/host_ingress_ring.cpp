@@ -152,6 +152,8 @@ bool HostIngressRing::slot_consumed(uint32_t slot) {
     throw std::runtime_error("HostIngressRing::slot_consumed: bad slot");
   }
   std::lock_guard<std::mutex> lock(mutex_);
+  if (state_[slot] == SlotState::Idle) return true;
+
   // Only Releasing means h2d_done_ describes this frame. A never-recorded event
   // queries as complete, so asking earlier would report a slot free while the
   // consumer still has it.
