@@ -205,6 +205,34 @@ bool UploadStage::process(const HostIngressRing::Staged& staged) {
     return true;
   }
 
+  if (graph_exec_.empty()) {
+    const uint32_t scratch = next_scratch_;
+    next_scratch_ = (next_scratch_ + 1) % static_cast<uint32_t>(scratch_.size());
+
+    cuda_error_check(cudaMemcpyAsync(scratch_[scratch], staged.data, staged.bytes,
+                                     cudaMemcpyHostToDevice, stream_),
+                     "UploadStage: cudaMemcpyAsync(H2D)");
+    hold.release();
+
+    WriteLease out_lease = out_->write_policy() == WritePolicy::ScanForFree
+                               ? out_->try_acquire_write(stream_)
+                               : out_->acquire_write(stream_);
+    if (!out_lease.valid()) {
+      cuda_error_check(cudaEventRecord(scratch_free_[scratch], stream_),
+                       "UploadStage: cudaEventRecord(scratch)");
+      dropped_.fetch_add(1, std::memory_order_relaxed);
+      return true;
+    }
+
+    transform_->enqueue(scratch_[scratch], input_desc_, out_lease.data(), output_desc_, stream_);
+    out_lease.publish(staged.timestamp_ns);
+    cuda_error_check(cudaEventRecord(scratch_free_[scratch], stream_),
+                     "UploadStage: cudaEventRecord(scratch)");
+
+    uploaded_.fetch_add(1, std::memory_order_relaxed);
+    return true;
+  }
+
   WriteLease out_lease = out_->acquire_write(stream_);
   const uint32_t slot = out_lease.slot();
 
@@ -212,10 +240,7 @@ bool UploadStage::process(const HostIngressRing::Staged& staged) {
   cuda_error_check(cudaEventSynchronize(scratch_free_[scratch]),
              "UploadStage: cudaEventSynchronize(scratch)");
 
-  if (graph_exec_.empty()) {
-    enqueue_eager(staged, scratch, out_lease.data(), [&hold] { hold.release(); });
-  } else if (staged.bytes != input_desc_.bytes() ||
-             staged.slot != slot % in_->slot_count()) {
+  if (staged.bytes != input_desc_.bytes() || staged.slot != slot % in_->slot_count()) {
     // Log the error, and fallback to eager path
     graph_fallbacks_.fetch_add(1, std::memory_order_relaxed);
     enqueue_eager(staged, scratch, out_lease.data(), [&hold] { hold.release(); });

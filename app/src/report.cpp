@@ -62,10 +62,10 @@ void Reporter::observe(uint64_t consumed, const ReadLease& lease) {
 
 void Reporter::print(uint64_t consumed, const ReadLease& lease) {
   std::printf("t=%luns slot=%u delivered=%lu uploaded=%lu consumed=%lu "
-              "incomplete=%lu foreign=%lu timeouts=%lu stalls=%lu failed=%lu",
+              "incomplete=%lu foreign=%lu timeouts=%lu stalls=%lu dropped=%lu failed=%lu",
               lease.timestamp_ns(), lease.slot(), source_->delivered(), upload_->uploaded(),
               consumed, source_->incomplete(), source_->foreign(), source_->timeouts(),
-              device_ring_->write_stalls(), upload_->failed());
+              device_ring_->write_stalls(), upload_->dropped(), upload_->failed());
   if (source_->incomplete()) {
     std::printf(" (%s)", source_->incomplete_breakdown().c_str());
   }
@@ -106,10 +106,10 @@ void Reporter::print(uint64_t consumed, const ReadLease& lease) {
 
 void Reporter::print_summary(uint64_t consumed) const {
   std::printf("\ndelivered=%lu uploaded=%lu consumed=%lu incomplete=%lu foreign=%lu "
-              "timeouts=%lu stalls=%lu failed=%lu\n",
+              "timeouts=%lu stalls=%lu dropped=%lu failed=%lu\n",
               source_->delivered(), upload_->uploaded(), consumed, source_->incomplete(),
               source_->foreign(), source_->timeouts(), device_ring_->write_stalls(),
-              upload_->failed());
+              upload_->dropped(), upload_->failed());
   if (source_->incomplete()) {
     std::printf("incomplete breakdown: %s\n", source_->incomplete_breakdown().c_str());
   }

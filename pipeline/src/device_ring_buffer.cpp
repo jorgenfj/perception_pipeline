@@ -157,11 +157,23 @@ void DeviceRingBuffer::wait_unleased(uint32_t slot) {
   }
 }
 
-uint32_t DeviceRingBuffer::claim_free_slot() {
+bool DeviceRingBuffer::reads_retired(uint32_t slot) const {
+  for (uint32_t c = 0; c < max_consumers_; ++c) {
+    if (cudaEventQuery(read_done_event_[slot * max_consumers_ + c]) !=
+        cudaSuccess) {
+      cudaGetLastError(); // swallow the cudaErrorNotReady we just provoked
+      return false;
+    }
+  }
+  return true;
+}
+
+uint32_t DeviceRingBuffer::claim_free_slot(bool blocking) {
   const uint32_t count = slot_count();
   for (;;) {
     const uint32_t newest = latest_.load(std::memory_order_acquire);
     uint32_t busy = kNoSlot;
+    uint32_t reading = kNoSlot;
 
     for (uint32_t i = 0; i < count; ++i) {
       const uint32_t slot = (next_write_slot_ + i) % count;
@@ -172,8 +184,21 @@ uint32_t DeviceRingBuffer::claim_free_slot() {
           busy = slot;
         continue;
       }
+      if (!reads_retired(slot)) {
+        if (reading == kNoSlot)
+          reading = slot;
+        continue;
+      }
       next_write_slot_ = (slot + 1) % count;
       return slot;
+    }
+
+    if (!blocking)
+      return kNoSlot;
+
+    if (reading != kNoSlot) {
+      next_write_slot_ = (reading + 1) % count;
+      return reading; // Still being read. Follow with order_behind_readers
     }
 
     // Everything is either leased or the current latest. Park on one of the
@@ -200,17 +225,44 @@ void DeviceRingBuffer::order_behind_readers(uint32_t slot,
 
 WriteLease DeviceRingBuffer::acquire_write(cudaStream_t stream) {
   reject_default_stream(stream, "DeviceRingBuffer::acquire_write");
+  return acquire_write_impl(stream, true);
+}
 
+WriteLease DeviceRingBuffer::try_acquire_write(cudaStream_t stream) {
+  reject_default_stream(stream, "DeviceRingBuffer::try_acquire_write");
+  if (write_policy_ != WritePolicy::ScanForFree) {
+    throw std::runtime_error(
+        "DeviceRingBuffer::try_acquire_write: needs WritePolicy::ScanForFree; "
+        "RoundRobin has a single candidate slot and nowhere else to go");
+  }
+  return acquire_write_impl(stream, false);
+}
+
+WriteLease DeviceRingBuffer::acquire_write_impl(cudaStream_t stream,
+                                                bool blocking) {
   uint32_t slot;
   if (write_policy_ == WritePolicy::RoundRobin) {
     slot = next_write_slot_;
     next_write_slot_ = (next_write_slot_ + 1) % slot_count();
   } else {
-    slot = claim_free_slot();
+    slot = claim_free_slot(blocking);
+    if (slot == kNoSlot) {
+      write_drops_.fetch_add(1, std::memory_order_relaxed);
+      return {};
+    }
   }
 
   seq_[slot].fetch_add(1, std::memory_order_seq_cst); // -> odd
-  wait_unleased(slot);
+
+  if (blocking) {
+    wait_unleased(slot);
+  } else if (readers_[slot].load(std::memory_order_seq_cst) != 0) {
+    // A consumer leased it between the scan and the seq bump that fences it
+    // off. 
+    seq_[slot].fetch_add(1, std::memory_order_seq_cst); // -> even
+    write_drops_.fetch_add(1, std::memory_order_relaxed);
+    return {};
+  }
 
   order_behind_readers(slot, stream);
 

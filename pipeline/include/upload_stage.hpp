@@ -88,6 +88,9 @@ class UploadStage {
   uint64_t uploaded() const { return uploaded_.load(std::memory_order_relaxed); }
   uint64_t failed() const { return failed_.load(std::memory_order_relaxed); }
 
+  // Frames dropped because device ring is full
+  uint64_t dropped() const { return dropped_.load(std::memory_order_relaxed); }
+
  private:
   // Both public forms funnel here; a null transform selects the upload-only
   // ordering. Private so the nullable pointer stays an implementation detail
@@ -120,6 +123,7 @@ class UploadStage {
   CudaStream stream_;
   std::vector<void*> scratch_;
   std::vector<cudaEvent_t> scratch_free_;
+  uint32_t next_scratch_ = 0;
 
   // One executable graph per output slot; empty when graphs are off. Indexed by
   // the acquired output slot rather than a frame counter, so the index is
@@ -131,6 +135,7 @@ class UploadStage {
   std::atomic<bool> running_{false};
   std::atomic<uint64_t> uploaded_{0};
   std::atomic<uint64_t> failed_{0};
+  std::atomic<uint64_t> dropped_{0};
   std::atomic<uint64_t> graph_fallbacks_{0};
 };
 

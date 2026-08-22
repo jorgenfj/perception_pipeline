@@ -57,9 +57,15 @@ public:
     return write_stalls_.load(std::memory_order_relaxed);
   }
 
+  uint64_t write_drops() const {
+    return write_drops_.load(std::memory_order_relaxed);
+  }
+
   // --- producer ---
 
   WriteLease acquire_write(cudaStream_t stream);
+
+  WriteLease try_acquire_write(cudaStream_t stream);
 
   void *data_at_slot(uint32_t slot) { return buffers_[slot]; }
 
@@ -106,8 +112,15 @@ private:
   void cleanup() noexcept;
 
   void wait_unleased(uint32_t slot);
-  uint32_t claim_free_slot();
+
+  // True once every consumer's last read of `slot` has retired on the GPU.
+  bool reads_retired(uint32_t slot) const;
+
+  // kNoSlot when `blocking` is false and nothing is idle on both sides.
+  uint32_t claim_free_slot(bool blocking);
   void order_behind_readers(uint32_t slot, cudaStream_t stream);
+
+  WriteLease acquire_write_impl(cudaStream_t stream, bool blocking);
 
   void publish_slot(uint32_t slot, uint64_t timestamp_ns, cudaStream_t stream);
   void abandon_slot(uint32_t slot) noexcept;
@@ -130,6 +143,7 @@ private:
   uint32_t next_write_slot_ = 0;
   std::atomic<uint32_t> latest_{kNoSlot};
   std::atomic<uint64_t> write_stalls_{0};
+  std::atomic<uint64_t> write_drops_{0};
   std::atomic<uint64_t> wait_seq_{0};
 };
 

@@ -52,16 +52,17 @@ void fill(void* dst, std::size_t bytes, uint8_t frame) {
 }
 
 // Pull the device ring's newest slot back to the host and compare.
-bool latest_matches(const DeviceRingBuffer& ring, uint8_t frame, uint64_t timestamp_ns) {
-  perception::FrameView view;
+bool latest_matches(DeviceRingBuffer& ring, uint8_t frame, uint64_t timestamp_ns) {
+  perception::FramePeek view;
   if (!ring.view_latest_inplace(view)) return false;
-  if (view.frame.timestamp_ns != timestamp_ns) return false;
+  if (view.timestamp_ns != timestamp_ns) return false;
 
-  if (cudaEventSynchronize(view.data_ready_event) != cudaSuccess) return false;
+  // FramePeek carries no event, so settle every stream before reading back.
+  if (cudaDeviceSynchronize() != cudaSuccess) return false;
 
   std::vector<uint8_t> got(kDesc.bytes());
-  if (cudaMemcpy(got.data(), view.frame.image_ptr, got.size(), cudaMemcpyDeviceToHost) !=
-      cudaSuccess) {
+  if (cudaMemcpy(got.data(), ring.data_at_slot(view.slot), got.size(),
+                 cudaMemcpyDeviceToHost) != cudaSuccess) {
     return false;
   }
 
@@ -400,14 +401,14 @@ void test_write_lease() {
   }
   check(threw, "the legacy default stream is refused");
 
-  perception::FrameView view;
+  perception::FramePeek view;
   {
     perception::WriteLease lease = device.acquire_write(stream);
     check(lease.valid() && lease.data() != nullptr, "a lease hands over a writable slot");
     check(!device.view_latest_inplace(view), "a held slot is not visible to consumers");
     lease.publish(4242);
   }
-  check(device.view_latest_inplace(view) && view.frame.timestamp_ns == 4242,
+  check(device.view_latest_inplace(view) && view.timestamp_ns == 4242,
         "publish makes it visible");
 
   // The abandon path: dropped without publish. Parity has to be restored, or the
@@ -416,7 +417,7 @@ void test_write_lease() {
     perception::WriteLease lease = device.acquire_write(stream);
     return lease.slot();
   }();
-  check(device.view_latest_inplace(view) && view.frame.timestamp_ns == 4242,
+  check(device.view_latest_inplace(view) && view.timestamp_ns == 4242,
         "an abandoned slot leaves latest_ alone");
   check(!device.get_view_by_timestamp(DeviceRingBuffer::kNoTimestamp, 0, view, false),
         "an abandoned slot carries a timestamp no query can match");
@@ -462,7 +463,7 @@ void test_read_lease_blocks_reuse() {
   check(std::memcmp(got.data(), want.data(), got.size()) == 0,
         "the leased slot's contents survived a producer lap");
 
-  lease.release();
+  lease.drop_hold();
   check(device.write_stalls() == 0, "the producer never had to stall at this depth");
 }
 
@@ -491,7 +492,7 @@ void test_read_lease_stalls_producer() {
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   check(!wrote.load(), "the producer blocks while the only free slot is leased");
 
-  lease.release();
+  lease.drop_hold();
   writer.join();
   check(wrote.load(), "releasing the lease lets the producer through");
   check(device.write_stalls() > 0, "the stall was counted");
