@@ -72,6 +72,9 @@ class StereoConsumer {
   // producer between the peek and the lease. Not a pairing failure.
   uint64_t reference_missed() const { return reference_missed_.load(std::memory_order_relaxed); }
 
+  // Reference frames skipped between step calls
+  uint64_t reference_skipped() const { return reference_skipped_.load(std::memory_order_relaxed); }
+
   // Worst |skew| in any pair so far, nanoseconds. With PTP locked and Scheduled
   // Action Commands armed this should stay in the microseconds.
   int64_t max_abs_skew_ns() const { return max_abs_skew_ns_.load(std::memory_order_relaxed); }
@@ -92,6 +95,7 @@ class StereoConsumer {
 
   uint32_t last_slot_ = 0;
   uint64_t last_seq_ = 0;
+  uint64_t last_published_ = 0;
   bool have_last_ = false;
   uint64_t next_pair_id_ = 0;
 
@@ -101,6 +105,7 @@ class StereoConsumer {
   std::atomic<uint64_t> unpaired_{0};
   std::atomic<uint64_t> late_partner_{0};
   std::atomic<uint64_t> reference_missed_{0};
+  std::atomic<uint64_t> reference_skipped_{0};
   std::atomic<int64_t> max_abs_skew_ns_{0};
 };
 

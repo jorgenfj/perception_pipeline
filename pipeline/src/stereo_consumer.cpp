@@ -50,6 +50,12 @@ bool StereoConsumer::step(cudaStream_t stream) {
     return false;
   }
 
+  const uint64_t published = reference_->published();
+  if (have_last_ && published > last_published_) {
+    reference_skipped_.fetch_add(published - last_published_ - 1, std::memory_order_relaxed);
+  }
+  last_published_ = published;
+
   last_slot_ = reference.slot();
   last_seq_ = reference.seq();
   have_last_ = true;
@@ -93,13 +99,15 @@ bool StereoConsumer::step(cudaStream_t stream) {
 }
 
 std::string StereoConsumer::health_line() const {
-  char buffer[160];
+  char buffer[224];  // six counters at full width, plus the skew
   std::snprintf(buffer, sizeof(buffer),
-                "stereo paired=%llu unpaired=%llu late=%llu missed=%llu max_skew=%.1fus",
+                "stereo paired=%llu unpaired=%llu late=%llu missed=%llu skipped=%llu "
+                "max_skew=%.1fus",
                 static_cast<unsigned long long>(paired()),
                 static_cast<unsigned long long>(unpaired()),
                 static_cast<unsigned long long>(late_partner()),
                 static_cast<unsigned long long>(reference_missed()),
+                static_cast<unsigned long long>(reference_skipped()),
                 static_cast<double>(max_abs_skew_ns()) * 1e-3);
   return buffer;
 }

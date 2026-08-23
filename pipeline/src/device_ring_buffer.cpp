@@ -287,6 +287,7 @@ void DeviceRingBuffer::publish_slot(uint32_t slot, uint64_t timestamp_ns,
   seq_[slot].fetch_add(1, std::memory_order_relaxed); // -> even
   latest_.store(slot, std::memory_order_release);
 
+  published_.fetch_add(1, std::memory_order_relaxed);
   wait_seq_.fetch_add(1, std::memory_order_release);
   wait_seq_.notify_all();
 }

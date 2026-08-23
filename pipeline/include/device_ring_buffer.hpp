@@ -61,6 +61,10 @@ public:
     return write_drops_.load(std::memory_order_relaxed);
   }
 
+  uint64_t published() const {
+    return published_.load(std::memory_order_relaxed);
+  }
+
   // --- producer ---
 
   WriteLease acquire_write(cudaStream_t stream);
@@ -144,6 +148,7 @@ private:
   std::atomic<uint32_t> latest_{kNoSlot};
   std::atomic<uint64_t> write_stalls_{0};
   std::atomic<uint64_t> write_drops_{0};
+  std::atomic<uint64_t> published_{0};
   std::atomic<uint64_t> wait_seq_{0};
 };
 

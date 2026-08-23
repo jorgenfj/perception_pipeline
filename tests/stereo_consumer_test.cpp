@@ -153,6 +153,36 @@ void test_late_partner_retry() {
   check(stereo.late_partner() == 1, "the retry is recorded as a late partner");
 }
 
+void test_counts_skipped_reference_frames() {
+  DeviceRingBuffer a = make_ring();
+  DeviceRingBuffer b = make_ring();
+  CudaStream stream;
+
+  StereoConsumer stereo(a, b, config(), kConsumerId, 0);
+
+  // One pair, stepped straight away: nothing had a chance to go past.
+  publish(b, stream, kPeriod);
+  publish(a, stream, kPeriod);
+  check(stereo.step(stream), "the first reference frame pairs");
+  check(stereo.reference_skipped() == 0, "and nothing is skipped on the first step");
+
+  // Three more reference frames while the consumer is not looking. step()
+  // takes `latest`, so the middle two are never attempted.
+  for (uint64_t k = 2; k <= 4; ++k) {
+    publish(b, stream, k * kPeriod);
+    publish(a, stream, k * kPeriod);
+  }
+
+  check(stereo.step(stream), "the newest reference frame pairs");
+  check(stereo.reference_skipped() == 2, "the two frames stepped over are counted skipped");
+  check(stereo.paired() == 2, "they are not counted as pairs");
+  check(stereo.unpaired() == 0, "nor as unpaired -- they were never looked up");
+
+  // A step with no new reference frame leaves it alone.
+  check(!stereo.step(stream), "no new reference frame is not a step");
+  check(stereo.reference_skipped() == 2, "and skips nothing");
+}
+
 void test_rejects_bad_construction() {
   DeviceRingBuffer a = make_ring();
   DeviceRingBuffer b = make_ring();
@@ -219,6 +249,7 @@ int main() {
   test_unpaired_when_partner_absent();
   test_moves_on_after_an_unpaired_frame();
   test_late_partner_retry();
+  test_counts_skipped_reference_frames();
   test_rejects_bad_construction();
   test_threaded();
 
