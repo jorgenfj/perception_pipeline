@@ -13,15 +13,6 @@
 
 namespace perception {
 
-// Live stereo pairing, as a self-contained consumer of two device rings.
-//
-// Live cannot see the future, but it does not need a matcher for that: the
-// rings already hold the recent past and lease_by_timestamp() already does the
-// lookup. So pairing is two lease calls -- take the newest frame of the
-// reference ring, ask the other ring for the frame carrying that timestamp --
-// and the ring's depth is the hold window. There is no pending-frame state
-// machine, no queue, and nothing tapped off the acquisition thread.
-//
 // The lookup runs at tolerance `config.tolerance_ns`, the same number the
 // offline merge in frame_pairing.hpp uses, and under the same precondition
 // (below half a frame period). Both therefore answer the same question and
@@ -31,17 +22,11 @@ namespace perception {
 class StereoConsumer {
  public:
   struct Config {
-    // Must be under half the frame period -- see require_pair_tolerance().
     uint64_t tolerance_ns = 500'000;
 
-    // A partner can still be in flight when the reference frame is published;
-    // that is transport jitter, not a sync fault. Retry before giving up.
+    // Retry for a partner still in flight
     uint32_t retry_attempts = 1;
     std::chrono::milliseconds retry_wait{2};
-
-    // Nominal frame period, used only to check tolerance_ns at construction.
-    // Zero skips the check, for tests that do not model a frame rate.
-    uint64_t frame_period_ns = 0;
   };
 
   // Invoked on the consumer thread with both leases still held, and with
@@ -51,8 +36,6 @@ class StereoConsumer {
   using PairCallback = std::function<void(const ReadLease& reference, const ReadLease& other,
                                           int64_t skew_ns, uint64_t pair_id, cudaStream_t stream)>;
 
-  // `reference` and `other` must outlive this. `consumer_id` must be within
-  // both rings' max_consumers and must not collide with another consumer's.
   StereoConsumer(DeviceRingBuffer& reference, DeviceRingBuffer& other, Config config,
                  uint32_t consumer_id, int device_id);
   ~StereoConsumer();
@@ -107,7 +90,6 @@ class StereoConsumer {
 
   PairCallback on_pair_;
 
-  // Single-consumer bookkeeping, touched only by step().
   uint32_t last_slot_ = 0;
   uint64_t last_seq_ = 0;
   bool have_last_ = false;

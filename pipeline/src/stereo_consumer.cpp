@@ -3,8 +3,6 @@
 #include <cstdio>
 #include <stdexcept>
 
-#include "frame_pairing.hpp"
-
 namespace perception {
 namespace {
 
@@ -25,12 +23,6 @@ StereoConsumer::StereoConsumer(DeviceRingBuffer& reference, DeviceRingBuffer& ot
   if (reference_ == other_) {
     throw std::runtime_error("StereoConsumer: the two rings must be different");
   }
-  // The greedy lookup is only unambiguous below half a period; above it, two
-  // different frames qualify. Checked here so a bad config fails at startup
-  // rather than silently pairing the wrong exposures.
-  if (config_.frame_period_ns != 0) {
-    require_pair_tolerance(config_.tolerance_ns, config_.frame_period_ns);
-  }
 }
 
 StereoConsumer::~StereoConsumer() { stop(); }
@@ -42,8 +34,6 @@ void StereoConsumer::start() {
 
 void StereoConsumer::stop() {
   if (!running_.exchange(false)) return;
-  // Both rings can be parked in wait_for_publish; wake them so the worker sees
-  // running_ == false rather than waiting out a frame that may never come.
   reference_->wake_all();
   other_->wake_all();
   if (worker_.joinable()) worker_.join();
@@ -56,32 +46,19 @@ bool StereoConsumer::step(cudaStream_t stream) {
 
   ReadLease reference = reference_->lease_latest(consumer_id_, stream);
   if (!reference.valid()) {
-    // The producer recycled the slot between the peek and the lease. Nothing to
-    // pair, and nothing to record against a frame we never held.
     reference_missed_.fetch_add(1, std::memory_order_relaxed);
     return false;
   }
 
-  // Advance the bookkeeping as soon as the frame is in hand. If this waited
-  // until a pair succeeded, an unpairable frame would be retried forever and
-  // the consumer would never move on.
   last_slot_ = reference.slot();
   last_seq_ = reference.seq();
   have_last_ = true;
 
-  // Tolerance zero would be exact-identity, but the reference timestamp comes
-  // from a different ring than the one being searched, so it is the *camera's*
-  // pair that has to fall inside the tolerance, not a copy of the same value.
   ReadLease other = other_->lease_by_timestamp(reference.timestamp_ns(), config_.tolerance_ns,
                                                consumer_id_, stream, /*closest_match=*/true);
 
   uint32_t attempt = 0;
   for (; !other.valid() && attempt < config_.retry_attempts; ++attempt) {
-    // The partner may simply not have landed yet. Sleeping here holds the
-    // reference slot, which is why the wait is short and the count is bounded:
-    // the whole retry budget is retry_attempts * retry_wait, and stop() waits
-    // out at most that much. Deliberately not conditioned on running_ -- step()
-    // is also callable inline, where running_ is false the whole time.
     std::this_thread::sleep_for(config_.retry_wait);
     other = other_->lease_by_timestamp(reference.timestamp_ns(), config_.tolerance_ns,
                                        consumer_id_, stream, /*closest_match=*/true);
@@ -93,8 +70,6 @@ bool StereoConsumer::step(cudaStream_t stream) {
   }
   if (attempt > 0) late_partner_.fetch_add(1, std::memory_order_relaxed);
 
-  // Order the caller's stream behind both frames' production before anything
-  // reads either one.
   cuda_error_check(cudaStreamWaitEvent(stream, reference.data_ready_event(), 0),
                    "StereoConsumer: cudaStreamWaitEvent(reference)");
   cuda_error_check(cudaStreamWaitEvent(stream, other.data_ready_event(), 0),

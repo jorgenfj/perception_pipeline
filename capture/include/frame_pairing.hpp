@@ -35,18 +35,7 @@ struct PairResult {
 };
 
 // The tolerance must be strictly under half the frame period.
-//
-// Two frames of one stream are at least a period apart, so a frame of the other
-// stream that falls between them is at distances summing to exactly that
-// period. Both fit inside `tolerance_ns` only when 2*tol >= period. Below that
-// bound the partner is unique or absent, which is what lets the merge below be
-// greedy and still be right.
-//
-// It is also the point where pairing stops meaning anything: at half a period,
-// two different exposures both qualify as "the same instant". So this is a real
-// precondition, not a convenience -- hence a throw rather than a clamp.
 inline void require_pair_tolerance(uint64_t tolerance_ns, uint64_t min_period_ns) {
-  // Written to avoid both overflow in 2*tol and truncation in period/2.
   if (min_period_ns == 0 || tolerance_ns >= min_period_ns ||
       tolerance_ns >= min_period_ns - tolerance_ns) {
     throw std::runtime_error(

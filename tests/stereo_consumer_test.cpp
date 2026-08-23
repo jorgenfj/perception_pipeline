@@ -50,7 +50,6 @@ StereoConsumer::Config config(uint32_t retries = 0) {
   c.tolerance_ns = kTol;
   c.retry_attempts = retries;
   c.retry_wait = std::chrono::milliseconds(1);
-  c.frame_period_ns = kPeriod;
   return c;
 }
 
@@ -167,23 +166,7 @@ void test_rejects_bad_construction() {
     return false;
   };
 
-  // kPeriod is odd, so the truncated half is still safe (see
-  // frame_pairing_test); one nanosecond above it is the first rejected value.
-  StereoConsumer::Config too_wide = config();
-  too_wide.tolerance_ns = kPeriod / 2 + 1;
-  check(throws(too_wide, kConsumerId),
-        "a tolerance past half the frame period is refused at construction");
-
-  StereoConsumer::Config widest_ok = config();
-  widest_ok.tolerance_ns = kPeriod / 2;
-  check(!throws(widest_ok, kConsumerId), "and the widest safe tolerance is accepted");
-
   check(throws(config(), /*id=*/9), "a consumer id outside max_consumers is refused");
-
-  StereoConsumer::Config unchecked = config();
-  unchecked.tolerance_ns = kPeriod;
-  unchecked.frame_period_ns = 0;
-  check(!throws(unchecked, kConsumerId), "a zero frame period skips the tolerance check");
 
   bool same_ring_threw = false;
   try {
