@@ -1,6 +1,7 @@
 #include <cuda_runtime.h>
 #include <pthread.h>
 
+#include <array>
 #include <atomic>
 #include <csignal>
 #include <cstdio>
@@ -8,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "acquire_source.hpp"
 #include "action_sync_check.hpp"
@@ -19,6 +21,7 @@
 #include "report.hpp"
 #include "ring_frame_sink.hpp"
 #include "headless_yolo_consumer.hpp"
+#include "stereo_consumer.hpp"
 #include "transforms/debayer.hpp"
 #include "upload_stage.hpp"
 #include "viewer_consumer.hpp"
@@ -26,14 +29,39 @@
 
 namespace {
 
+constexpr uint32_t kMaxStreams = 2;
+
 std::atomic<bool> g_stop{false};
-std::atomic<perception::DeviceRingBuffer*> g_ring{nullptr};
+
+std::array<std::atomic<perception::DeviceRingBuffer*>, kMaxStreams> g_rings{};
 sigset_t stop_signals;
 
 constexpr uint32_t kPipelineConsumerId = 0;
 constexpr uint32_t kSecondaryConsumerId = 1;
+constexpr uint32_t kStereoConsumerId = 2;
 
 using perception::cuda_error_check;
+
+void wake_all_rings() {
+  for (auto& slot : g_rings) {
+    if (perception::DeviceRingBuffer* ring = slot.load(std::memory_order_acquire)) {
+      ring->wake_all();
+    }
+  }
+}
+
+// One camera's path from the wire to the device ring.
+struct StreamPipeline {
+  std::string role;
+  perception::FrameSource* source = nullptr;
+
+  perception::LatencyProbe probe;
+  std::unique_ptr<perception::HostIngressRing> ingress;
+  std::unique_ptr<perception::RingFrameSink> sink;
+  std::unique_ptr<perception::DeviceRingBuffer> device_ring;
+  std::unique_ptr<perception::UploadStage> upload;
+  perception::ActionSyncChecker action_sync_checker;
+};
 
 }  // namespace
 
@@ -49,9 +77,7 @@ int main(int argc, char** argv) {
     int signal_number = 0;
     sigwait(&stop_signals, &signal_number);
     g_stop.store(true, std::memory_order_relaxed);
-    if (perception::DeviceRingBuffer* ring = g_ring.load(std::memory_order_acquire)) {
-      ring->wake_all();
-    }
+    wake_all_rings();
   });
   struct SignalRelayGuard {
     std::thread& t;
@@ -71,41 +97,64 @@ int main(int argc, char** argv) {
     std::printf("config: %s\n", config_path.c_str());
     std::printf("viewer: %s\n", perception::to_string(config.viewer_mode));
 
-    // ---- source: live camera or recording ----
+    // ---- source: live cameras or a recording ----
     std::unique_ptr<perception::AcquireSource> acquire_source =
         perception::make_acquire_source(config);
-    perception::FrameSource& source = acquire_source->source();
-    std::printf("source: %s -- %s\n", perception::acquire_source_kind(),
-                acquire_source->describe().c_str());
+    const uint32_t stream_count = acquire_source->stream_count();
+    if (stream_count == 0 || stream_count > kMaxStreams) {
+      throw std::runtime_error("source opened " + std::to_string(stream_count) +
+                               " streams; this app handles one or two");
+    }
+    for (uint32_t s = 0; s < stream_count; ++s) {
+      std::printf("source: %s -- %s\n", perception::acquire_source_kind(),
+                  acquire_source->describe(s).c_str());
+    }
 
-    const perception::CameraGeometry& geometry = source.geometry();
+    const bool stereo_enabled = config.stereo.enabled && stream_count == 2;
+    if (config.stereo.enabled && !stereo_enabled) {
+      std::printf(
+          "stereo: disabled -- the config asks for pairing but this source opened %u stream(s).\n"
+          "        A recording build replays one stream by design; see source_recording.cpp.\n",
+          stream_count);
+    }
+
+    const perception::CameraGeometry& geometry = acquire_source->source(0).geometry();
     const perception::ImageDesc desc = perception::to_image_desc(geometry);
     std::printf("frames: %ux%u stride=%u %s, %zu bytes/frame, %zu bytes/buffer, min %u buffers\n",
                 geometry.width, geometry.height, geometry.stride_bytes,
                 geometry.pixel_format.c_str(), geometry.frame_bytes, geometry.buffer_bytes,
-                source.min_slot_count());
+                acquire_source->source(0).min_slot_count());
+
+    if (config.have_calibration) {
+      std::printf("%s\n", config.calibration.summary().c_str());
+      if (config.calibration.width != geometry.width ||
+          config.calibration.height != geometry.height) {
+        throw std::runtime_error(
+            "calibration was solved at " + std::to_string(config.calibration.width) + "x" +
+            std::to_string(config.calibration.height) + " but the cameras came up " +
+            std::to_string(geometry.width) + "x" + std::to_string(geometry.height) +
+            " -- re-run the calibration at this geometry, or set camera.features' Width/Height "
+            "back to what it was calibrated at");
+      }
+    }
 
     // Read right after Init(): GevIEEE1588Status won't be Slave yet even on a
     // healthy setup (BMC takes a few Announce intervals to settle), so this is
     // "does the node exist / feature applied", not "is it locked" -- Reporter's
     // periodic line is what confirms lock. Empty for a source with no clock.
-    const std::string ptp_status = source.ptp_status();
+    const std::string ptp_status = acquire_source->source(0).ptp_status();
     if (ptp_status.rfind("recorded:", 0) == 0) {
       std::printf("ptp: %s (what the rig reported when this was recorded)\n",
                   ptp_status.c_str());
     } else if (!ptp_status.empty()) {
-      std::printf("ptp: status=%s (see spinnaker/README.md if this doesn't reach Slave)\n",
-                  ptp_status.c_str());
+      for (uint32_t s = 0; s < stream_count; ++s) {
+        std::printf("ptp: %s status=%s (see spinnaker/README.md if this doesn't reach Slave)\n",
+                    acquire_source->describe(s).c_str(),
+                    acquire_source->source(s).ptp_status().c_str());
+      }
     }
 
-    perception::LatencyProbe probe;
-
-    // ---- host: camera buffer -> pinned ingress ring ----
-    perception::HostIngressRing ingress(config.pipeline.ingress_depth, geometry.buffer_bytes,
-                                        config.pipeline.device_id, perception::FillMode::External);
-    perception::RingFrameSink sink(ingress, &probe);
-
-    // ---- device: H2D + debayer -> device ring ----
+    // ---- device: H2D + debayer -> device ring, one chain per stream ----
     perception::DebayerTransform debayer;
     const perception::ImageDesc display_desc = debayer.output_desc(desc);
     std::printf("transform: %s -> %ux%u stride=%u RGBA8, %zu bytes/frame\n", debayer.name(),
@@ -117,11 +166,30 @@ int main(int argc, char** argv) {
     display_texture.height = display_desc.height;
     display_texture.pitch_bytes = display_desc.stride_bytes;
 
-    perception::DeviceRingBuffer device_ring(
-        config.pipeline.device_depth, display_desc.bytes(), config.pipeline.reuse_wait,
-        config.pipeline.write_policy, config.pipeline.max_consumers, config.pipeline.device_id,
-        display_texture);
-    g_ring.store(&device_ring, std::memory_order_release);
+    std::vector<std::unique_ptr<StreamPipeline>> streams;
+    for (uint32_t s = 0; s < stream_count; ++s) {
+      auto stream = std::make_unique<StreamPipeline>();
+      stream->role = s < config.streams.size() ? config.streams[s].role : "cam" + std::to_string(s);
+      stream->source = &acquire_source->source(s);
+      stream->action_sync_checker.label = stream->role;
+
+      stream->ingress = std::make_unique<perception::HostIngressRing>(
+          config.pipeline.ingress_depth, geometry.buffer_bytes, config.pipeline.device_id,
+          perception::FillMode::External);
+      stream->sink =
+          std::make_unique<perception::RingFrameSink>(*stream->ingress, &stream->probe);
+
+      stream->device_ring = std::make_unique<perception::DeviceRingBuffer>(
+          config.pipeline.device_depth, display_desc.bytes(), config.pipeline.reuse_wait,
+          config.pipeline.write_policy, config.pipeline.max_consumers, config.pipeline.device_id,
+          display_texture);
+      g_rings[s].store(stream->device_ring.get(), std::memory_order_release);
+
+      stream->upload = std::make_unique<perception::UploadStage>(
+          *stream->ingress, *stream->device_ring, debayer, desc, config.upload);
+
+      streams.push_back(std::move(stream));
+    }
 
     struct RingUnregister {
       std::thread& t;
@@ -130,11 +198,12 @@ int main(int argc, char** argv) {
           pthread_kill(t.native_handle(), SIGINT);
           t.join();
         }
-        g_ring.store(nullptr, std::memory_order_release);
+        for (auto& slot : g_rings) slot.store(nullptr, std::memory_order_release);
       }
     } ring_unregister{signal_relay};
 
-    perception::UploadStage upload(ingress, device_ring, debayer, desc, config.upload);
+    // Everything downstream of the rings hangs off the reference stream
+    StreamPipeline& reference = *streams[0];
 
     perception::YoloConfig yolo_config = config.yolo;
     yolo_config.engine_path = perception::resolve_next_to_exe(yolo_config.engine_path);
@@ -146,20 +215,57 @@ int main(int argc, char** argv) {
     switch (config.viewer_mode) {
       case perception::ViewerMode::Camera:
         camera_viewer = std::make_unique<perception::ViewerConsumer>(
-            device_ring, probe, display_desc, config.display, kSecondaryConsumerId,
-            config.pipeline.device_id);
+            *reference.device_ring, reference.probe, display_desc, config.display,
+            kSecondaryConsumerId, config.pipeline.device_id);
         break;
       case perception::ViewerMode::Yolo:
         yolo_viewer = std::make_unique<perception::YoloViewerConsumer>(
-            device_ring, probe, display_desc, config.display, yolo_config, kSecondaryConsumerId,
-            config.pipeline.device_id);
+            *reference.device_ring, reference.probe, display_desc, config.display, yolo_config,
+            kSecondaryConsumerId, config.pipeline.device_id);
         break;
       case perception::ViewerMode::Headless:
         headless_yolo = std::make_unique<perception::HeadlessYoloConsumer>(
-            device_ring, display_desc, yolo_config,
+            *reference.device_ring, display_desc, yolo_config,
             perception::HeadlessYoloConsumer::OutputLocation::Host, kSecondaryConsumerId,
             config.pipeline.device_id);
         break;
+    }
+
+    std::unique_ptr<perception::StereoConsumer> stereo;
+    if (stereo_enabled) {
+      const uint32_t ref_index = config.stereo.reference_stream;
+      const uint32_t other_index = ref_index == 0 ? 1u : 0u;
+
+      stereo = std::make_unique<perception::StereoConsumer>(
+          *streams[ref_index]->device_ring, *streams[other_index]->device_ring,
+          config.stereo.consumer, kStereoConsumerId, config.pipeline.device_id);
+
+      stereo->set_pair_callback([](const perception::ReadLease& /*reference*/,
+                                   const perception::ReadLease& /*other*/, int64_t /*skew_ns*/,
+                                   uint64_t /*pair_id*/, cudaStream_t /*stream*/) {
+        // Intentionally empty for now.
+        //
+        // Both leases are held and `stream` is already ordered behind both
+        // frames' data-ready events, so work enqueued here may read either
+        // frame directly -- this is where rectification and disparity will go,
+        // using config.calibration.
+        //
+        // Two rules when filling it in. Do not block: the leases are holding a
+        // slot in each ring, and the frame is only guaranteed stable while they
+        // live. And read the frames on `stream` and nowhere else -- the
+        // read-completion event is recorded only against it, so a read from
+        // another stream or from the host is not covered and the producer may
+        // overwrite underneath it.
+      });
+
+      std::printf(
+          "stereo: pairing %s (reference) against %s at %luus, %u retry x %ldms, calibration %s\n",
+          streams[ref_index]->role.c_str(), streams[other_index]->role.c_str(),
+          static_cast<unsigned long>(config.stereo.consumer.tolerance_ns / 1000),
+          config.stereo.consumer.retry_attempts,
+          static_cast<long>(config.stereo.consumer.retry_wait.count()),
+          config.have_calibration ? "loaded" : "none");
+      stereo->start();
     }
 
     // Closed only ever means "the window the user had open just went away";
@@ -175,18 +281,26 @@ int main(int argc, char** argv) {
     if (headless_yolo) headless_yolo->start();
 
     auto stop_helpers = [&] {
+      if (stereo) stereo->stop();
       if (camera_viewer) camera_viewer->stop();
       if (yolo_viewer) yolo_viewer->stop();
       if (headless_yolo) headless_yolo->stop();
-      device_ring.wake_all();
+      wake_all_rings();
       if (signal_relay.joinable()) {
         pthread_kill(signal_relay.native_handle(), SIGINT);
         signal_relay.join();
       }
     };
 
-    perception::Reporter reporter(source, upload, device_ring, probe, config, ptp_status);
-    perception::ActionSyncChecker action_sync_checker;
+    perception::Reporter reporter(*reference.source, *reference.upload, *reference.device_ring,
+                                  reference.probe, config, ptp_status);
+
+    auto any_finished = [&] {
+      for (const auto& stream : streams) {
+        if (stream->source->finished()) return true;
+      }
+      return false;
+    };
 
     uint64_t consumed = 0;
     uint32_t last_slot = ~0u;
@@ -194,22 +308,28 @@ int main(int argc, char** argv) {
 
     perception::CudaStream consumer;
     try {
-      source.set_finished_callback([&device_ring] { device_ring.wake_all(); });
-      source.start(sink);
-      upload.start();
+      for (auto& stream : streams) {
+        stream->source->set_finished_callback([] { wake_all_rings(); });
+        stream->source->start(*stream->sink);
+        stream->upload->start();
+      }
 
-      acquire_source->arm_action_sync(config.action_sync, action_sync_checker);
-      while (!g_stop.load(std::memory_order_relaxed) && !secondary_closed() && !source.finished()) {
-        const uint64_t seen = device_ring.wait_seq();
+      std::vector<perception::ActionSyncChecker*> checkers;
+      for (auto& stream : streams) checkers.push_back(&stream->action_sync_checker);
+      acquire_source->arm_action_sync(config.action_sync, checkers);
+
+      while (!g_stop.load(std::memory_order_relaxed) && !secondary_closed() && !any_finished()) {
+        const uint64_t seen = reference.device_ring->wait_seq();
 
         perception::FramePeek peek;
-        if (!device_ring.view_latest_inplace(peek) ||
+        if (!reference.device_ring->view_latest_inplace(peek) ||
             (peek.slot == last_slot && peek.slot_seq == last_seq)) {
-          device_ring.wait_for_publish(seen);
+          reference.device_ring->wait_for_publish(seen);
           continue;
         }
 
-        perception::ReadLease lease = device_ring.lease_latest(kPipelineConsumerId, consumer);
+        perception::ReadLease lease =
+            reference.device_ring->lease_latest(kPipelineConsumerId, consumer);
         if (!lease.valid()) continue;
         last_slot = lease.slot();
         last_seq = lease.seq();
@@ -218,26 +338,40 @@ int main(int argc, char** argv) {
                          "cudaStreamWaitEvent");
 
         ++consumed;
-        action_sync_checker.observe(lease.timestamp_ns());
+        for (auto& stream : streams) {
+          if (stream.get() == &reference) stream->action_sync_checker.observe(lease.timestamp_ns());
+        }
         reporter.observe(consumed, lease);
+
+        if (stereo && consumed % 60 == 0) {
+          std::printf("  %s\n", stereo->health_line().c_str());
+        }
       }
     } catch (...) {
-      source.stop();
-      upload.stop();
+      for (auto& stream : streams) {
+        stream->source->stop();
+        stream->upload->stop();
+      }
       stop_helpers();
       throw;
     }
 
-    source.stop();
-    upload.stop();
+    for (auto& stream : streams) {
+      stream->source->stop();
+      stream->upload->stop();
+    }
     stop_helpers();
     cudaStreamSynchronize(consumer);
 
     reporter.print_summary(consumed);
+    if (stereo) std::printf("%s\n", stereo->health_line().c_str());
 
-    if (source.failed()) {
-      std::printf("acquisition failed: %s\n", source.failure().c_str());
-      status = 1;
+    for (auto& stream : streams) {
+      if (stream->source->failed()) {
+        std::printf("acquisition failed on %s: %s\n", stream->role.c_str(),
+                    stream->source->failure().c_str());
+        status = 1;
+      }
     }
   } catch (const std::exception& e) {
     std::printf("FAILED: %s\n", e.what());

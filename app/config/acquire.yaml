@@ -62,6 +62,57 @@ camera:
   stream_features:
     - StreamBufferHandlingMode: NewestOnly
 
+# Which cameras make up the rig, in stream order. streams[0] is the reference
+# eye -- the one the stereo consumer anchors on and the one the viewer shows.
+#
+# Everything else about the two cameras comes from `camera:` above and applies
+# to both: exposure, gain, geometry and PTP are rig-wide, and two cameras
+# configured differently are not a stereo pair. Only the serial differs, which
+# is why that is all this section carries.
+#
+# Leave this out entirely for a single-camera run and `camera.serial` is used,
+# exactly as before stereo existed. With two entries, set both serials: an empty
+# one picks whatever is found first, and the two streams may then swap between
+# runs -- which silently swaps left and right.
+streams:
+  - role: left
+    serial: ""
+  - role: right
+    serial: ""
+
+# Live stereo pairing across the two device rings (pipeline/stereo_consumer.hpp).
+#
+# Only for a -DPERCEPTION_SOURCE=spinnaker build. The recording source replays a
+# single stream by design, and two of them would each rebase timestamps onto
+# their own start instant, destroying the shared epoch pairing depends on.
+# `acquire` says so and carries on rather than refusing to run.
+stereo:
+  enabled: true
+
+  # lease_latest() anchors on this stream; the other one is searched for the
+  # partner carrying the same instant.
+  reference_stream: 0
+
+  # Two frames whose camera timestamps are within this of each other are the
+  # same instant. MUST stay strictly under half the frame period -- at or above
+  # that bound two different exposures both qualify and pairing stops meaning
+  # anything. At the 7.5 Hz configured above, half a period is 66666us, so 500
+  # is far inside it. Nothing checks this any more: StereoConsumer trusts the
+  # caller, so the bound is yours to keep.
+  tolerance_us: 500
+
+  # A partner can still be in flight when the reference frame is published.
+  # That is transport jitter, not a sync fault, so wait once before giving up.
+  # Watch `late=` on the stereo health line: ones and twos are harmless,
+  # climbing means jitter is eating into the frame period.
+  retry_attempts: 1
+  retry_ms: 2
+
+  # Intrinsics, extrinsics, rectification and baseline. Relative to this file.
+  # Its roles are checked against `streams:` above, so the calibration cannot be
+  # applied to the wrong eye. Set to "" to pair without one.
+  calibration: "stereo_calibration.yaml"
+
 # This source section is only read when -DPERCEPTION_SOURCE=recording.
 source:
   recording: ""
@@ -97,7 +148,7 @@ pipeline:
   # once its H2D has retired. Too shallow shows up as `timeouts` climbing.
   ingress_depth: 8
   device_depth: 6
-  max_consumers: 2
+  max_consumers: 3
   device_id: 0
 
   # DeviceWait keeps slot reuse on the stream; HostSync blocks the upload

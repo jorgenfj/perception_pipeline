@@ -1,0 +1,97 @@
+# Stereo calibration for the rig `acquire` drives. Loaded by
+# capture/src/stereo_calibration.cpp; see capture/include/stereo_calibration.hpp
+# for what each field means.
+#
+# NOTHING IN THIS REPO PRODUCES THESE NUMBERS. There is no OpenCV and no
+# linear-algebra library in the build, and calibration is a fixed property of
+# the rig rather than something to redo per run. Generate the file offline:
+#
+#   ret, K1, D1, K2, D2, R, T, E, F = cv2.stereoCalibrate(...)
+#   R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(K1, D1, K2, D2, size, R, T,
+#                                               flags=cv2.CALIB_ZERO_DISPARITY,
+#                                               alpha=0)
+#
+# and copy the results in, row-major, in the order printed. Everything below is
+# row-major to match, so a value here can be compared against the calibration
+# script without transposing anything in your head.
+#
+# ---------------------------------------------------------------------------
+# THE VALUES BELOW ARE PLACEHOLDERS, not a calibration of any real rig.
+# They describe a plausible 1440x1080 pair on a 120mm baseline so the file
+# parses, the consistency checks pass, and the wiring can be exercised before
+# a calibration exists. Replace them before believing any depth this produces.
+# ---------------------------------------------------------------------------
+
+# The size the calibration was solved at. Checked against the geometry the
+# cameras actually come up in: intrinsics are in pixels, so a calibration taken
+# at a different Width/Height or a different binning is not a scale factor away
+# from correct, it is simply wrong. Keep this in step with camera.features'
+# Width/Height in acquire.yaml.
+image_size:
+  width: 1440
+  height: 1080
+
+# In stream order -- cameras[0] is streams[0], the reference eye. The roles are
+# matched against `streams:` in acquire.yaml, so a calibration cannot be applied
+# to the wrong eye by editing one file and not the other.
+cameras:
+  - role: left
+    serial: ""
+    # K, row-major: [fx 0 cx; 0 fy cy; 0 0 1]
+    camera_matrix: [1050.0,    0.0, 720.0,
+                       0.0, 1050.0, 540.0,
+                       0.0,    0.0,   1.0]
+    distortion:
+      model: plumb_bob          # [k1 k2 p1 p2 k3]
+      coefficients: [0.0, 0.0, 0.0, 0.0, 0.0]
+    rectification:
+      # R1: rotation taking this camera into the rectified frame.
+      rotation: [1.0, 0.0, 0.0,
+                 0.0, 1.0, 0.0,
+                 0.0, 0.0, 1.0]
+      # P1, row-major 3x4. The reference eye's P[3] is 0 by construction.
+      projection: [1050.0,    0.0, 720.0, 0.0,
+                      0.0, 1050.0, 540.0, 0.0,
+                      0.0,    0.0,   1.0, 0.0]
+
+  - role: right
+    serial: ""
+    camera_matrix: [1050.0,    0.0, 720.0,
+                       0.0, 1050.0, 540.0,
+                       0.0,    0.0,   1.0]
+    distortion:
+      model: plumb_bob
+      coefficients: [0.0, 0.0, 0.0, 0.0, 0.0]
+    rectification:
+      rotation: [1.0, 0.0, 0.0,
+                 0.0, 1.0, 0.0,
+                 0.0, 0.0, 1.0]
+      # P2[3] = -fx * baseline = -1050.0 * 0.12 = -126.0. This is where the
+      # baseline enters the disparity maths, and it is checked against
+      # baseline_m below.
+      projection: [1050.0,    0.0, 720.0, -126.0,
+                      0.0, 1050.0, 540.0,    0.0,
+                      0.0,    0.0,   1.0,    0.0]
+
+# The second camera's pose in the first camera's frame, straight out of
+# stereoCalibrate. Translation in metres.
+extrinsics:
+  rotation: [1.0, 0.0, 0.0,
+             0.0, 1.0, 0.0,
+             0.0, 0.0, 1.0]
+  translation_m: [-0.12, 0.0, 0.0]
+
+# |translation_m|, spelled out because it is the number people actually quote
+# and check against a tape measure. Stated separately and then verified against
+# the vector above and against P2[3]: all three describe one distance, and a
+# file where they disagree has been hand-edited in one place only. A wrong
+# baseline scales every depth in the scene without ever looking wrong.
+baseline_m: 0.12
+
+rectification:
+  # Q from stereoRectify, row-major 4x4:
+  #   [X Y Z W]^T = Q * [u v disparity 1]^T,  depth = Z/W
+  disparity_to_depth: [1.0, 0.0, 0.0,  -720.0,
+                       0.0, 1.0, 0.0,  -540.0,
+                       0.0, 0.0, 0.0,  1050.0,
+                       0.0, 0.0, 8.3333333333, 0.0]

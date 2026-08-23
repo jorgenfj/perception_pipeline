@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "action_sync_check.hpp"
 #include "app_config.hpp"
@@ -20,23 +22,30 @@ namespace perception {
 class AcquireSource {
  public:
   virtual ~AcquireSource() = default;
+  virtual uint32_t stream_count() const = 0;
 
   // Ready to start() by the time the factory returns, so geometry() can size
   // the ingress ring.
-  virtual FrameSource& source() = 0;
+  virtual FrameSource& source(uint32_t stream) = 0;
 
-  // What this source turned out to be, for the startup line: a camera serial,
+  // What this stream turned out to be, for the startup line: a camera serial,
   // or a recording directory and which stream of it.
-  virtual std::string describe() const = 0;
+  virtual std::string describe(uint32_t stream) const = 0;
 
   // A scheduled AcquisitionStart, when the config asks for one. Called after
   // start(): with TriggerMode=On/AcquisitionStart the camera delivers nothing
   // until the command fires, so BeginAcquisition has to have run first.
   //
+  // One broadcast covers every camera matching the keys, so a stereo pair takes
+  // one call -- but each stream gets its own checker, because where the two
+  // eyes' first frames landed relative to each other is the whole question.
+  // `checkers` has one entry per stream.
+  //
   // A source that cannot schedule anything says so and carries on rather than
   // throwing -- action_sync left enabled while replaying a recording is a
   // config written for the rig, not an error.
-  virtual void arm_action_sync(const ActionSyncConfig& config, ActionSyncChecker& checker) = 0;
+  virtual void arm_action_sync(const ActionSyncConfig& config,
+                               const std::vector<ActionSyncChecker*>& checkers) = 0;
 };
 
 // Defined by whichever source_*.cpp was compiled in.

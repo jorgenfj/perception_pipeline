@@ -147,6 +147,84 @@ AppConfig load_app_config(const std::string& path) {
   // and two parsers for one section is how they end up disagreeing.
   config.action_sync = load_action_sync_config(path);
 
+  // --- streams ---------------------------------------------------------------
+  // Absent means one stream, taking camera.serial. That is the pre-stereo
+  // config verbatim, so an existing file keeps working unchanged.
+  if (const YAML::Node streams = root["streams"]) {
+    if (!streams.IsSequence() || streams.size() == 0) {
+      fail("streams", "expected a non-empty sequence, one entry per camera");
+    }
+    if (streams.size() > 2) {
+      fail("streams", "at most two streams; pairing more than a pair is a different problem");
+    }
+    for (std::size_t i = 0; i < streams.size(); ++i) {
+      const std::string where = "streams[" + std::to_string(i) + "]";
+      StreamConfig stream;
+      read(streams[i], "role", where, stream.role);
+      read(streams[i], "serial", where, stream.serial);
+      if (stream.role.empty()) stream.role = "cam" + std::to_string(i);
+      config.streams.push_back(stream);
+    }
+  }
+  if (config.streams.empty()) {
+    config.streams.push_back(StreamConfig{"cam0", config.camera.serial});
+  }
+
+  // --- stereo ----------------------------------------------------------------
+  if (const YAML::Node stereo = root["stereo"]) {
+    read(stereo, "enabled", "stereo", config.stereo.enabled);
+    read(stereo, "reference_stream", "stereo", config.stereo.reference_stream);
+    read(stereo, "calibration", "stereo", config.stereo.calibration_path);
+
+    uint64_t tolerance_us = config.stereo.consumer.tolerance_ns / 1000;
+    read(stereo, "tolerance_us", "stereo", tolerance_us);
+    config.stereo.consumer.tolerance_ns = tolerance_us * 1000;
+
+    read(stereo, "retry_attempts", "stereo", config.stereo.consumer.retry_attempts);
+
+    uint64_t retry_ms = static_cast<uint64_t>(config.stereo.consumer.retry_wait.count());
+    read(stereo, "retry_ms", "stereo", retry_ms);
+    config.stereo.consumer.retry_wait = std::chrono::milliseconds(retry_ms);
+  }
+
+  if (config.stereo.enabled) {
+    if (config.streams.size() != 2) {
+      fail("stereo.enabled",
+           "pairing needs exactly two streams, but `streams:` declares " +
+               std::to_string(config.streams.size()));
+    }
+    if (config.stereo.reference_stream > 1) {
+      fail("stereo.reference_stream", "must be 0 or 1");
+    }
+    if (config.pipeline.max_consumers < 3) {
+      fail("pipeline.max_consumers",
+           "stereo needs at least 3 (main loop, viewer, stereo consumer), got " +
+               std::to_string(config.pipeline.max_consumers));
+    }
+    if (!config.stereo.calibration_path.empty()) {
+      config.calibration = load_stereo_calibration(
+          resolve_config_path(config.stereo.calibration_path,
+                              std::filesystem::path(path).parent_path().string()));
+      config.have_calibration = true;
+
+      for (std::size_t s = 0; s < 2; ++s) {
+        const CameraCalibration& cal = config.calibration.camera[s];
+        if (cal.role != config.streams[s].role) {
+          fail("stereo.calibration",
+               "cameras[" + std::to_string(s) + "] is role '" + cal.role +
+                   "' but streams[" + std::to_string(s) + "] is '" + config.streams[s].role +
+                   "'; the calibration would be applied to the wrong eye");
+        }
+        if (!cal.serial.empty() && !config.streams[s].serial.empty() &&
+            cal.serial != config.streams[s].serial) {
+          fail("stereo.calibration",
+               "cameras[" + std::to_string(s) + "] was taken on camera " + cal.serial +
+                   " but streams[" + std::to_string(s) + "] opens " + config.streams[s].serial);
+        }
+      }
+    }
+  }
+
   config.upload.device_id = config.pipeline.device_id;
   return config;
 }

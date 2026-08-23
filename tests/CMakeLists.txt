@@ -16,6 +16,14 @@ add_executable(recording_test recording_test.cpp)
 target_link_libraries(recording_test PRIVATE perception_recording)
 add_test(NAME recording_test COMMAND recording_test)
 
+# The shipped calibration is part of what this covers, so the test is told
+# where app/config/ is rather than guessing from the working directory.
+add_executable(stereo_calibration_test stereo_calibration_test.cpp)
+target_link_libraries(stereo_calibration_test PRIVATE perception_camera)
+target_compile_definitions(stereo_calibration_test
+  PRIVATE PERCEPTION_APP_CONFIG_DIR="${CMAKE_SOURCE_DIR}/app/config")
+add_test(NAME stereo_calibration_test COMMAND stereo_calibration_test)
+
 add_executable(cpu_debayer_test cpu_debayer_test.cpp)
 target_link_libraries(cpu_debayer_test PRIVATE perception_stereo)
 add_test(NAME cpu_debayer_test COMMAND cpu_debayer_test)
