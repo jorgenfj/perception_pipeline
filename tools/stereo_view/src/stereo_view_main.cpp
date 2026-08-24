@@ -38,7 +38,7 @@
 #include "stereo_live.hpp"
 #include "stereo_pairer.hpp"
 
-#ifdef PERCEPTION_WITH_DISPLAY
+#ifdef OPENGL_DISPLAY
 #include "stereo_view.hpp"
 #endif
 
@@ -694,7 +694,7 @@ int main(int argc, char** argv) {
     }
 
     // --- window ---------------------------------------------------------------
-#ifdef PERCEPTION_WITH_DISPLAY
+#ifdef OPENGL_DISPLAY
     std::unique_ptr<perception::StereoView> view;
     if (config.display) {
       perception::StereoView::Config view_config;
@@ -715,7 +715,7 @@ int main(int argc, char** argv) {
     }
 #else
     if (config.display) {
-      std::printf("display: compiled out (PERCEPTION_WITH_DISPLAY=OFF)\n");
+      std::printf("display: compiled out (OPENGL_DISPLAY=OFF)\n");
     }
 #endif
 
@@ -754,7 +754,7 @@ int main(int argc, char** argv) {
       if (playback && playback->finished()) break;
       if (options.max_pairs != 0 && pairs >= options.max_pairs) break;
 
-#ifdef PERCEPTION_WITH_DISPLAY
+#ifdef OPENGL_DISPLAY
       if (view) {
         // Blocks on the display connection, so an idle window costs nothing.
         // A new pair does not wake it; the ring is checked on the same tick,
@@ -782,7 +782,7 @@ int main(int argc, char** argv) {
         for (uint32_t s = 0; s < 2; ++s) {
           if (pair.have[s]) sync_check[s].observe(pair.timestamp_ns[s]);
         }
-#ifdef PERCEPTION_WITH_DISPLAY
+#ifdef OPENGL_DISPLAY
         if (view) {
           for (uint32_t s = 0; s < 2; ++s) {
             if (!pair.have[s]) continue;

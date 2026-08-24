@@ -24,7 +24,7 @@ namespace perception {
 //
 // Nothing GL appears in this header -- not GLFW, not OpenGL, not GlViewer --
 // and there is a do-nothing implementation for builds without
-// PERCEPTION_WITH_DISPLAY. That is what lets the composition root name this
+// OPENGL_DISPLAY. That is what lets the composition root name this
 // type unconditionally and stay free of display #ifdefs.
 class ViewerConsumer {
  public:
