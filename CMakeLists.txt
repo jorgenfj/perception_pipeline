@@ -25,7 +25,7 @@ if(PERCEPTION_WITH_CUDA)
   set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
   if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    set(CMAKE_CUDA_ARCHITECTURES "87-real;120-real;120-virtual" CACHE STRING
+    set(CMAKE_CUDA_ARCHITECTURES "87-real;120-real" CACHE STRING
         "CUDA architectures to build for")
   endif()
 endif()
