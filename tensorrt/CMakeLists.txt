@@ -1,5 +1,3 @@
-# TensorRT engine loading and inference. Everything here assumes an engine
-# file already exists -- built offline
 find_path(TENSORRT_INCLUDE_DIR NvInfer.h)
 find_library(TENSORRT_NVINFER_LIB nvinfer)
 
@@ -8,6 +6,38 @@ if(NOT TENSORRT_INCLUDE_DIR OR NOT TENSORRT_NVINFER_LIB)
     "TensorRT (NvInfer.h / libnvinfer) not found -- install the TensorRT apt packages this "
     "Jetson image ships with")
 endif()
+
+# --- consistency guards ------------------------------------------------------
+# We deliberately PIN BOTH TensorRT (major 10) and CUDA (major 12) so one build
+# runs on both deployment targets:
+#   * RTX 50-series desktop (Blackwell, sm_120) -- needs TRT >= 10.7 for sm_120
+#   * Orin Jetson / JetPack 6  (Ampere,   sm_87) -- ships CUDA 12.x + TRT 10.x
+# CUDA 12 + TRT 10 is the common denominator both platforms support
+# Engines are also version-locked, so the major line must match the .engine file.
+# The apt packages ship two flavours (+cuda12.x / +cuda13.x) -- always pick +cuda12.
+set(PERCEPTION_TRT_MAJOR 10 CACHE STRING "Required TensorRT major version (must match the engine file)")
+set(PERCEPTION_CUDA_MAJOR 12 CACHE STRING "Required CUDA toolkit major version")
+
+# 1. CUDA toolkit is the expected major (CUDAToolkit_VERSION_* comes from the top-level find_package)
+if(NOT CUDAToolkit_VERSION_MAJOR STREQUAL PERCEPTION_CUDA_MAJOR)
+  message(FATAL_ERROR
+    "CUDA ${PERCEPTION_CUDA_MAJOR}.x required, found ${CUDAToolkit_VERSION}. "
+    "TensorRT must be the matching +cuda${PERCEPTION_CUDA_MAJOR}.x deb.")
+endif()
+
+# 2. TensorRT header major matches the engine's build
+file(READ "${TENSORRT_INCLUDE_DIR}/NvInferVersion.h" _trt_ver_hdr)
+# TRT 10 defines the numbers via TRT_*_ENTERPRISE and aliases NV_TENSORRT_* to them
+string(REGEX MATCH "TRT_MAJOR_ENTERPRISE ([0-9]+)" _ "${_trt_ver_hdr}")
+set(_trt_major "${CMAKE_MATCH_1}")
+string(REGEX MATCH "TRT_MINOR_ENTERPRISE ([0-9]+)" _ "${_trt_ver_hdr}")
+set(_trt_minor "${CMAKE_MATCH_1}")
+if(NOT _trt_major STREQUAL PERCEPTION_TRT_MAJOR)
+  message(FATAL_ERROR
+    "TensorRT ${PERCEPTION_TRT_MAJOR}.x required (engine compatibility), found ${_trt_major}.${_trt_minor} "
+    "at ${TENSORRT_INCLUDE_DIR}. Install libnvinfer-dev=${PERCEPTION_TRT_MAJOR}.*+cuda${PERCEPTION_CUDA_MAJOR}.9.")
+endif()
+message(STATUS "TensorRT ${_trt_major}.${_trt_minor} (${TENSORRT_NVINFER_LIB})")
 
 add_library(perception_tensorrt
   src/trt_engine.cpp
