@@ -27,11 +27,25 @@ endif()
 
 # 2. TensorRT header major matches the engine's build
 file(READ "${TENSORRT_INCLUDE_DIR}/NvInferVersion.h" _trt_ver_hdr)
-# TRT 10 defines the numbers via TRT_*_ENTERPRISE and aliases NV_TENSORRT_* to them
+# Two spellings in the wild. TRT 10.7+ defines the numbers as TRT_*_ENTERPRISE and
+# aliases NV_TENSORRT_* to them; the TRT 10.3 that JetPack 6 ships defines
+# NV_TENSORRT_* as the literal. Try the alias source first, since where it exists
+# NV_TENSORRT_MAJOR expands to a name rather than a digit and would not match.
 string(REGEX MATCH "TRT_MAJOR_ENTERPRISE ([0-9]+)" _ "${_trt_ver_hdr}")
 set(_trt_major "${CMAKE_MATCH_1}")
 string(REGEX MATCH "TRT_MINOR_ENTERPRISE ([0-9]+)" _ "${_trt_ver_hdr}")
 set(_trt_minor "${CMAKE_MATCH_1}")
+if(_trt_major STREQUAL "")
+  string(REGEX MATCH "NV_TENSORRT_MAJOR ([0-9]+)" _ "${_trt_ver_hdr}")
+  set(_trt_major "${CMAKE_MATCH_1}")
+  string(REGEX MATCH "NV_TENSORRT_MINOR ([0-9]+)" _ "${_trt_ver_hdr}")
+  set(_trt_minor "${CMAKE_MATCH_1}")
+endif()
+if(_trt_major STREQUAL "")
+  message(FATAL_ERROR
+    "could not read a version out of ${TENSORRT_INCLUDE_DIR}/NvInferVersion.h -- it defines "
+    "neither TRT_MAJOR_ENTERPRISE nor NV_TENSORRT_MAJOR as a number")
+endif()
 if(NOT _trt_major STREQUAL PERCEPTION_TRT_MAJOR)
   message(FATAL_ERROR
     "TensorRT ${PERCEPTION_TRT_MAJOR}.x required (engine compatibility), found ${_trt_major}.${_trt_minor} "
