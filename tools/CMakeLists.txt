@@ -1,2 +1,3 @@
 add_subdirectory(spin_acquire)
 add_subdirectory(stereo_view)
+add_subdirectory(ptp_trigger_test)

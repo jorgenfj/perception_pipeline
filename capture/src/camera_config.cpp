@@ -122,6 +122,10 @@ ActionSyncConfig load_action_sync_config(const std::string& path) {
   read(action_sync, "tolerance_ms", "action_sync", config.tolerance_ms);
   read(action_sync, "expected_start_offset_ms", "action_sync", config.expected_start_offset_ms);
   read(action_sync, "ptp_wait_ms", "action_sync", config.ptp_wait_ms);
+  read(action_sync, "per_frame", "action_sync", config.per_frame);
+  read(action_sync, "trigger_hz", "action_sync", config.trigger_hz);
+  read(action_sync, "trigger_lead_ms", "action_sync", config.trigger_lead_ms);
+  if (config.trigger_hz <= 0.0) config.trigger_hz = config.expected_hz;
   return config;
 }
 

@@ -66,6 +66,23 @@ perception::StereoCameras stereo_cameras(const perception::StereoConfig& config)
   return cameras;
 }
 
+// Put the cameras in per-frame FrameStart / Action0 trigger mode so each
+// scheduled Action Command fires one synchronized capture. Appended after the
+// config's own features so it wins over the yaml's free-run TriggerMode. Order:
+// keys and selector/source before TriggerMode On, frame-rate limiter off so the
+// trigger alone paces acquisition.
+void append_per_frame_trigger(perception::CameraConfig& camera,
+                              const perception::ActionSyncConfig& sync) {
+  auto set = [&](const char* node, std::string v) { camera.features.emplace_back(node, v); };
+  set("ActionDeviceKey", std::to_string(sync.device_key));
+  set("ActionGroupKey", std::to_string(sync.group_key));
+  set("ActionGroupMask", std::to_string(sync.group_mask));
+  set("AcquisitionFrameRateEnable", "false");
+  set("TriggerSelector", "FrameStart");
+  set("TriggerSource", "Action0");
+  set("TriggerMode", "On");
+}
+
 struct Options {
   std::string config_path;
   std::string play;
@@ -79,6 +96,7 @@ struct Options {
   uint64_t max_pairs = 0;
   bool sync_start = false;
   uint32_t ptp_watch_s = 0;
+  double capture_hz = 0.0;  // >0: drive per-frame scheduled triggers at this rate
 };
 
 void print_usage() {
@@ -96,6 +114,9 @@ void print_usage() {
       "  --pairs N         stop after N pairs\n"
       "  --sync-start      schedule a PTP AcquisitionStart on both cameras and check\n"
       "                    where it landed (needs both cameras PTP Slave)\n"
+      "  --capture-hz N    drive per-frame PTP-scheduled triggers at N fps so EVERY\n"
+      "                    exposure is aligned (not just the start). Watch max_skew --\n"
+      "                    this is what stops the two shutters drifting apart\n"
       "  --ptp-watch N     open both cameras WITHOUT streaming and watch their PTP\n"
       "                    lock for N seconds, then exit. Run it idle, then again\n"
       "                    while streaming, to see if the traffic is what breaks it\n"
@@ -137,6 +158,8 @@ Options parse_args(int argc, char** argv) {
       options.ptp_watch_s = static_cast<uint32_t>(std::stoul(value("--ptp-watch")));
     } else if (arg == "--sync-start") {
       options.sync_start = true;
+    } else if (arg == "--capture-hz") {
+      options.capture_hz = std::stod(value("--capture-hz"));
     } else if (arg == "--pairs") {
       options.max_pairs = std::stoull(value("--pairs"));
     } else if (!arg.empty() && arg[0] == '-') {
@@ -559,10 +582,17 @@ int main(int argc, char** argv) {
     const std::string config_path =
         options.config_path.empty() ? config_file("stereo.yaml") : options.config_path;
     perception::StereoConfig config = perception::load_stereo_config(config_path);
-    const perception::CameraConfig camera_config = perception::load_camera_config(config_path);
+    perception::CameraConfig camera_config = perception::load_camera_config(config_path);
     perception::ActionSyncConfig action_sync_config =
         perception::load_action_sync_config(config_path);
     if (options.sync_start) action_sync_config.enabled = true;
+    // Per-frame triggering owns acquisition timing, so it is incompatible with
+    // the one-shot AcquisitionStart of --sync-start: the cameras go into
+    // FrameStart trigger mode and only this loop makes them expose.
+    if (options.capture_hz > 0.0) {
+      append_per_frame_trigger(camera_config, action_sync_config);
+      action_sync_config.enabled = false;  // not the one-shot path
+    }
     std::printf("config: %s\n", config_path.c_str());
 
     if (options.decimate != 0) config.decimate = options.decimate;
@@ -739,6 +769,34 @@ int main(int argc, char** argv) {
       live->arm_scheduled_start(action_sync_config, sync_check[0], sync_check[1]);
     }
 
+    // Per-frame synchronized capture: one PTP-scheduled trigger per frame, so
+    // EVERY exposure fires on the shared clock, not just the start. This is what
+    // stops the two shutters drifting apart -- watch max_skew stay small.
+    std::atomic<bool> trig_run{true};
+    std::atomic<uint64_t> trig_sent{0};
+    std::atomic<uint64_t> trig_failed{0};
+    std::thread trigger_thread;
+    if (live && options.capture_hz > 0.0) {
+      std::printf("capture: per-frame scheduled triggers at %.1f Hz\n", options.capture_hz);
+      if (!live->wait_for_ptp_slave(std::chrono::milliseconds(action_sync_config.ptp_wait_ms))) {
+        std::printf("capture: PTP not locked -- triggers will NO_REF_TIME until it locks\n");
+      }
+      trigger_thread = std::thread([&] {
+        const uint64_t period_ns = static_cast<uint64_t>(1e9 / options.capture_hz);
+        const uint64_t lead_ns = 100'000'000ull;  // schedule each trigger 100 ms ahead
+        uint64_t target = perception::host_now_ns() + lead_ns;
+        while (trig_run.load(std::memory_order_relaxed) && !g_stop) {
+          if (!live->send_trigger(action_sync_config, target))
+            trig_failed.fetch_add(1, std::memory_order_relaxed);
+          trig_sent.fetch_add(1, std::memory_order_relaxed);
+          target += period_ns;
+          const int64_t wake = static_cast<int64_t>(target) - static_cast<int64_t>(lead_ns);
+          const int64_t d = wake - static_cast<int64_t>(perception::host_now_ns());
+          if (d > 0) std::this_thread::sleep_for(std::chrono::nanoseconds(d));
+        }
+      });
+    }
+
     perception::HostImage image[2];
     bool paused = false;
     uint64_t emitted = 0;
@@ -820,18 +878,37 @@ int main(int argc, char** argv) {
           // Re-read per report, not per frame: this is a live GVCP register
           // read, and PTP state is the thing most likely to change under you
           // mid-run (BMC re-election, a master appearing or going away).
+          // ptp_sample() carries OffsetFromMaster too, so the servo converging
+          // -- or a camera re-link throwing it off -- is visible in the line.
           std::string ptp;
-          for (const std::string& status : live->ptp_status()) {
+          for (const perception::LiveStereo::PtpSample& sample : live->ptp_sample()) {
             if (!ptp.empty()) ptp += "/";
-            ptp += status.empty() ? "-" : status;
+            ptp += sample.status.empty() ? "-" : sample.status;
+            if (sample.has_offset && sample.status == "Slave") {
+              char off[24];
+              std::snprintf(off, sizeof(off), "(%+.1fus)", sample.offset_ns / 1000.0);
+              ptp += off;
+            }
           }
           line += " | ptp " + ptp;
+        }
+        if (options.capture_hz > 0.0) {
+          char trig[64];
+          std::snprintf(trig, sizeof(trig), " | trig sent=%lu fail=%lu",
+                        static_cast<unsigned long>(trig_sent.load()),
+                        static_cast<unsigned long>(trig_failed.load()));
+          line += trig;
         }
         if (recorder && recorder->active()) line += " | " + recorder->health_line();
         std::printf("%s\n", line.c_str());
         std::fflush(stdout);
       }
     }
+
+    // Stop the trigger loop before tearing down acquisition -- send_trigger
+    // touches the SDK the sources own.
+    trig_run.store(false, std::memory_order_relaxed);
+    if (trigger_thread.joinable()) trigger_thread.join();
 
     if (playback) playback->stop();
     if (live) live->stop();

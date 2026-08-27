@@ -46,6 +46,16 @@ class AcquireSource {
   // config written for the rig, not an error.
   virtual void arm_action_sync(const ActionSyncConfig& config,
                                const std::vector<ActionSyncChecker*>& checkers) = 0;
+
+  // Stops whatever arm_action_sync started. Must run before the sources stop,
+  // because a per-frame trigger thread touches the SDK the sources own; safe to
+  // call when nothing was armed, and safe to call twice.
+  virtual void stop_action_sync() = 0;
+
+  // "trig sent=1204 ok=1204 overflow=0", or empty when nothing is triggering.
+  // A per-frame run whose log does not show the ack tally is a run that cannot
+  // tell a dropped trigger from a dropped frame.
+  virtual std::string trigger_health_line() const = 0;
 };
 
 // Defined by whichever source_*.cpp was compiled in.

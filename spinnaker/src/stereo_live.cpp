@@ -285,6 +285,21 @@ void LiveStereo::arm_scheduled_start(const ActionSyncConfig& config, ActionSyncC
   right.label = "cam1";
 }
 
+bool LiveStereo::send_trigger(const ActionSyncConfig& config, uint64_t target_ns) {
+  // pResultSize is the EXPECTED device count -- two cameras. Passing the real
+  // count (not an array capacity) is what keeps the call from waiting out the
+  // ack timeout for devices that do not exist.
+  Spinnaker::ActionCommandResult results[2];
+  unsigned int result_size = 2;
+  impl_->system->SendActionCommand(config.device_key, config.group_key, config.group_mask,
+                                   target_ns, /*requestAck=*/true, &result_size, results);
+  unsigned int ok = 0;
+  for (unsigned int i = 0; i < result_size; ++i) {
+    if (results[i].Status == Spinnaker::SPINNAKER_ACTION_COMMAND_STATUS_OK) ++ok;
+  }
+  return ok >= 2;
+}
+
 bool LiveStereo::failed() const {
   return impl_->streams[0].source->failed() || impl_->streams[1].source->failed();
 }

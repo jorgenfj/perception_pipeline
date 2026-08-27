@@ -343,11 +343,20 @@ int main(int argc, char** argv) {
         }
         reporter.observe(consumed, lease);
 
-        if (stereo && consumed % 60 == 0) {
-          std::printf("  %s\n", stereo->health_line().c_str());
+        if (consumed % 60 == 0) {
+          const std::string trig = acquire_source->trigger_health_line();
+          if (stereo && !trig.empty()) {
+            std::printf("  %s | %s\n", stereo->health_line().c_str(), trig.c_str());
+          } else if (stereo) {
+            std::printf("  %s\n", stereo->health_line().c_str());
+          } else if (!trig.empty()) {
+            std::printf("  %s\n", trig.c_str());
+          }
         }
       }
     } catch (...) {
+      // Before the sources: the trigger thread touches the SDK they own.
+      acquire_source->stop_action_sync();
       for (auto& stream : streams) {
         stream->source->stop();
         stream->upload->stop();
@@ -356,6 +365,7 @@ int main(int argc, char** argv) {
       throw;
     }
 
+    acquire_source->stop_action_sync();
     for (auto& stream : streams) {
       stream->source->stop();
       stream->upload->stop();
@@ -365,6 +375,10 @@ int main(int argc, char** argv) {
 
     reporter.print_summary(consumed);
     if (stereo) std::printf("%s\n", stereo->health_line().c_str());
+    {
+      const std::string trig = acquire_source->trigger_health_line();
+      if (!trig.empty()) std::printf("%s\n", trig.c_str());
+    }
 
     for (auto& stream : streams) {
       if (stream->source->failed()) {

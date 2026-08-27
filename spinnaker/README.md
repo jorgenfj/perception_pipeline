@@ -165,15 +165,75 @@ both built on `System::SendActionCommand`:
   locked first -- an unlocked camera acks `NO_REF_TIME` for any scheduled
   command.
 
-Use `TriggerSelector=AcquisitionStart`, not `FrameStart`. One scheduled
-action then aligns the *start* of `AcquisitionMode=Continuous` on every
-camera to the same instant; each free-runs from there at its own
-`AcquisitionFrameRate`, no further Action Commands needed to stay in phase --
-ongoing PTP tracking is what holds them together, not repeated triggering.
-Triggering every frame (`FrameStart` + one Action Command each) reintroduces
-host-loop timing jitter for no benefit once PTP is already locked, and is
-bounded by `ActionQueueSize` (check it's nonzero on your camera model) --
-avoid it for a running stream.
+### Why one-shot `AcquisitionStart` is not enough
+
+`TriggerSelector=AcquisitionStart` sends one scheduled action that aligns the
+*start* of `AcquisitionMode=Continuous` on every camera to the same instant.
+That part works: both eyes begin within the precision PTP gives you.
+
+They do not stay there. Once running, `AcquisitionFrameRate` is generated
+from the **sensor clock domain** -- the camera's own crystal -- not from the
+PTP-disciplined clock. PTP corrects `GetTimeStamp()`; it does not steer the
+oscillator that decides when the next exposure starts. So two cameras both
+told "7.5 Hz" are really running at 7.5 Hz ± their own crystal error, and the
+phase between them walks at the difference. A few ppm is milliseconds of skew
+over a minute, and it accumulates without bound.
+
+The timestamps do not show this honestly either: both are PTP-corrected, so a
+pair whose shutters have drifted apart can still report plausible-looking
+stamps. Watch `max_skew` in stereo pairing, not the stamps alone.
+
+**`TriggerSelector=FrameStart` + one scheduled Action Command per frame is
+what actually holds two shutters together over a long run.** Every exposure is
+pinned to a PTP instant, so the sensor crystal stops mattering -- it only has
+to be stable enough within a single frame period, not across the run. The
+costs are real and worth knowing: host-loop timing jitter on each command, and
+a bound from `ActionQueueSize` (check it's nonzero on your camera model). They
+buy bounded skew, which the one-shot cannot give you.
+
+One-shot `AcquisitionStart` remains the right choice for a short run, a single
+camera, or when the pairing tolerance is loose enough that the drift never
+reaches it.
+
+#### Per-frame triggering in `acquire`
+
+Set `action_sync.per_frame: true` in `app/config/acquire.yaml`:
+
+```yaml
+action_sync:
+  enabled: true
+  per_frame: true
+  trigger_hz: 7.5
+  trigger_lead_ms: 100.0
+```
+
+`acquire` then appends the trigger features to every camera itself --
+`TriggerSelector=FrameStart`, `TriggerSource=Action0`, `TriggerMode=On`, the
+action keys, and `AcquisitionFrameRateEnable=false` -- after whatever
+`camera.features` said, so the yaml above wins and `AcquisitionFrameRate`
+stops mattering. `trigger_hz` is the capture rate.
+
+A host thread then sends one scheduled command per frame. Unlike the one-shot
+path, PTP not being locked at startup is a warning rather than a fatal error:
+the loop keeps running and starts working when the cameras reach `Slave`.
+
+The run prints a `trig` tally every 60 frames and once at the end:
+
+```
+trig sent=1204 ok=1204 missing_ack=0 not_ok=0
+```
+
+`sent` should track delivered frames one-to-one. `missing_ack` counts commands
+where fewer cameras answered than exist -- lost on the wire, or the ack lost
+the race with image traffic on the return path. `not_ok` counts commands that
+landed and were refused, `OVERFLOW` among them.
+
+Watch `OVERFLOW` when raising the rate: commands in flight is roughly
+`trigger_lead_ms / (1000 / trigger_hz)`, so 100 ms of lead at 60 Hz keeps six
+of them queued on a camera whose `ActionQueueSize` may be smaller. Bring
+`trigger_lead_ms` down as the rate goes up. `tools/ptp_trigger_test` sweeps
+rates and prints the same counters if you want the ceiling before committing a
+config to it.
 
 ### Verifying it end-to-end: `acquire_action_sync_test.yaml`
 

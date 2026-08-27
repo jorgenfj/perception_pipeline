@@ -38,6 +38,9 @@ class RecordingAcquireSource final : public AcquireSource {
         "             schedule and the frame spacing is the one already in the file\n");
   }
 
+  void stop_action_sync() override {}
+  std::string trigger_health_line() const override { return {}; }
+
  private:
   std::unique_ptr<RecordingSource> source_;
 };

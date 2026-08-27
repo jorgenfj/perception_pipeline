@@ -96,6 +96,16 @@ class LiveStereo {
   void arm_scheduled_start(const ActionSyncConfig& config, ActionSyncChecker& left,
                            ActionSyncChecker& right);
 
+  // Broadcast ONE scheduled Action Command (FrameStart trigger) to both cameras,
+  // to fire a single synchronized capture at PTP time `target_ns`. Unlike
+  // arm_scheduled_start's one-shot AcquisitionStart, this is meant to be called
+  // once per frame so every exposure -- not just the first -- is PTP-aligned,
+  // which is what actually holds the two shutters together over time. Requires
+  // the cameras configured for TriggerSelector=FrameStart / TriggerSource=Action0
+  // (set that in camera.features before construction). Returns true if both
+  // cameras acknowledged OK.
+  bool send_trigger(const ActionSyncConfig& config, uint64_t target_ns);
+
   // True once either source has given up, i.e. no further frames can arrive.
   bool failed() const;
 

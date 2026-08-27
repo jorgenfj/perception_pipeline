@@ -87,6 +87,33 @@ struct ActionSyncConfig {
   // "Listening" and need a few Announce intervals; sampling once and giving up
   // fails a rig that was about to work.
   uint32_t ptp_wait_ms = 20000;
+
+  // Per-frame triggering instead of the one-shot AcquisitionStart.
+  //
+  // false: one scheduled Action Command aligns the *start* of Continuous
+  // acquisition, then each camera free-runs at its own AcquisitionFrameRate.
+  // The pair does not stay aligned: that rate comes off the sensor clock, not
+  // the PTP-disciplined one, so the two crystals walk apart at their ppm
+  // difference and the skew grows without bound. Fine for a short run or a
+  // single camera; not for a stereo rig that has to hold sync.
+  //
+  // true: TriggerSelector=FrameStart / TriggerSource=Action0, and a host thread
+  // sends one scheduled command per frame -- every exposure is pinned to a PTP
+  // instant, so the sensor crystal only has to hold within one frame period
+  // rather than across the run. This is what actually keeps two shutters
+  // together. Costs host-loop timing jitter and is bounded by the camera's
+  // ActionQueueSize; see trigger_lead_ms. See spinnaker/README.md.
+  bool per_frame = false;
+
+  // Trigger rate for per_frame. 0 means "use expected_hz", which keeps the one
+  // rate the checker already validates against from being stated twice.
+  double trigger_hz = 0.0;
+
+  // How far ahead of its firing instant each per-frame command is scheduled.
+  // Commands in flight is roughly trigger_lead_ms / (1000 / trigger_hz), and
+  // exceeding the camera's ActionQueueSize comes back as OVERFLOW acks -- so
+  // this has to come down as the rate goes up.
+  double trigger_lead_ms = 100.0;
 };
 
 // Reads the `action_sync:` section. Shared by acquire and stereo_view so the

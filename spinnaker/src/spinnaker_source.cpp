@@ -267,7 +267,9 @@ SpinnakerSource::ActionKeys SpinnakerSource::action_keys(uint32_t& device_key,
 
 bool SpinnakerSource::ptp_offset_ns(int64_t& out) {
   INodeMap& nodes = camera_->GetNodeMap();
-  const CIntegerPtr value = nodes.GetNode("GevIEEE1588OffsetFromMaster");
+  const CCommandPtr latch = nodes.GetNode("GevIEEE1588DataSetLatch");
+  if (latch.IsValid() && IsWritable(latch)) latch->Execute();
+  const CIntegerPtr value = nodes.GetNode("GevIEEE1588OffsetFromMasterLatched");
   if (!IsReadable(value)) return false;
   out = value->GetValue();
   return true;

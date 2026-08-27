@@ -87,7 +87,7 @@ streams:
 # their own start instant, destroying the shared epoch pairing depends on.
 # `acquire` says so and carries on rather than refusing to run.
 stereo:
-  enabled: true
+  enabled: false
 
   # lease_latest() anchors on this stream; the other one is searched for the
   # partner carrying the same instant.
@@ -194,3 +194,65 @@ yolo:
   model_width: 640
   model_height: 640
   conf_threshold: 0.25
+
+# PTP-synchronized capture via GigE Vision Action Commands.
+#
+# Needs PTP working first: a master on the host (see spinnaker/README.md) and
+# `GevIEEE1588: "true"` in camera.features above, which is already set. Cameras
+# that are not "Slave" ack NO_REF_TIME and nothing fires.
+action_sync:
+  enabled: false
+
+  # Must match ActionDeviceKey / ActionGroupKey / ActionGroupMask on the camera.
+  # In per_frame mode these are written to the camera for you; in the default
+  # mode set them yourself in camera.features.
+  device_key: 1
+  group_key: 1
+  group_mask: 1
+
+  # false: ONE scheduled AcquisitionStart aligns the start of acquisition, then
+  #   each camera free-runs at camera.features.AcquisitionFrameRate. They do not
+  #   stay aligned -- that rate is generated from the sensor clock, not the
+  #   PTP-disciplined one, so the two crystals walk apart at their ppm
+  #   difference and the skew grows without bound. Fine for a short run or a
+  #   single camera.
+  #
+  # true: one scheduled command per frame (TriggerSelector=FrameStart /
+  #   TriggerSource=Action0), so every exposure is pinned to a PTP instant and
+  #   the sensor crystal only has to hold within one frame period rather than
+  #   across the run. This is what keeps a stereo pair synced. acquire writes
+  #   the trigger features itself and turns AcquisitionFrameRateEnable off,
+  #   overriding camera.features above -- trigger_hz becomes the capture rate.
+  #   Costs host-loop timing jitter; the run's `trig` line says whether it is
+  #   keeping up.
+  per_frame: false
+
+  # per_frame only. 0 falls back to expected_hz, so the rate is stated once.
+  trigger_hz: 0.0
+
+  # per_frame only. How far ahead each command is scheduled. Commands in flight
+  # is roughly trigger_lead_ms / (1000 / trigger_hz) -- at 7.5 Hz and 100 ms
+  # that is under one, but pushing the rate up without bringing this down runs
+  # into the camera's ActionQueueSize and shows up as OVERFLOW acks in `trig`.
+  trigger_lead_ms: 100.0
+
+  # Scheduled for the next whole second at least this far ahead. Default mode
+  # only; per_frame uses trigger_lead_ms.
+  lead_time_ms: 500.0
+
+  # Checked against the delivered timestamps. Keep in step with whichever rate
+  # is actually in force -- AcquisitionFrameRate above, or trigger_hz when
+  # per_frame is on -- or every frame reads as mis-spaced when the only thing
+  # wrong is this number.
+  expected_hz: 7.5
+  check_frames: 60
+  tolerance_ms: 2.0
+
+  # GetTimeStamp()'s latch point relative to the trigger is a sensor convention:
+  # a camera latching at end-of-exposure reports a start offset equal to
+  # ExposureTime, which is not a sync failure. Measure it once and set it here.
+  expected_start_offset_ms: 0.0
+
+  # Applying the camera config resets PTP, so the cameras start in "Listening"
+  # and need a few Announce intervals before they reach "Slave".
+  ptp_wait_ms: 20000
