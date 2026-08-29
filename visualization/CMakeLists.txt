@@ -2,7 +2,8 @@ add_library(perception_visualization)
 
 target_include_directories(perception_visualization PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
-target_link_libraries(perception_visualization PUBLIC perception_core perception_tensorrt)
+target_link_libraries(perception_visualization PUBLIC perception_core perception_tensorrt
+                                               perception_capture)
 
 if(OPENGL_DISPLAY)
   target_sources(perception_visualization PRIVATE

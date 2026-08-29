@@ -8,7 +8,7 @@ namespace perception {
 
 
 // Deliberately system_clock and not steady_clock, and deliberately the same
-// clock as LatencyProbe::host_now_ns() on the pipeline side
+// clock as LatencyProbe::host_now_ns()
 inline uint64_t host_now_ns() {
   return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                    std::chrono::system_clock::now().time_since_epoch())
