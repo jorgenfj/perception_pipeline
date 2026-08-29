@@ -19,3 +19,5 @@ tensorrt/models/*.onnx
 recordings/
 .clangd
 __pycache__/
+
+.dfout
