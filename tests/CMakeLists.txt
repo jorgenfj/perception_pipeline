@@ -30,9 +30,9 @@ add_test(NAME cpu_debayer_test COMMAND cpu_debayer_test)
 
 # --- needs a GPU, but no camera -----------------------------------------------
 if(PERCEPTION_WITH_CUDA)
-  add_executable(stereo_consumer_test stereo_consumer_test.cpp)
-  target_link_libraries(stereo_consumer_test PRIVATE perception_core)
-  add_test(NAME stereo_consumer_test COMMAND stereo_consumer_test)
+  add_executable(ring_pair_consumer_test ring_pair_consumer_test.cpp)
+  target_link_libraries(ring_pair_consumer_test PRIVATE perception_core)
+  add_test(NAME ring_pair_consumer_test COMMAND ring_pair_consumer_test)
 
   add_executable(upload_stage_test upload_stage_test.cpp)
   target_link_libraries(upload_stage_test PRIVATE perception_core)

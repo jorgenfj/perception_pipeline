@@ -21,7 +21,7 @@
 #include "report.hpp"
 #include "ring_frame_sink.hpp"
 #include "headless_yolo_consumer.hpp"
-#include "stereo_consumer.hpp"
+#include "ring_pair_consumer.hpp"
 #include "transforms/debayer.hpp"
 #include "upload_stage.hpp"
 #include "viewer_consumer.hpp"
@@ -38,7 +38,7 @@ sigset_t stop_signals;
 
 constexpr uint32_t kPipelineConsumerId = 0;
 constexpr uint32_t kSecondaryConsumerId = 1;
-constexpr uint32_t kStereoConsumerId = 2;
+constexpr uint32_t kRingPairConsumerId = 2;
 
 using perception::cuda_error_check;
 
@@ -231,14 +231,14 @@ int main(int argc, char** argv) {
         break;
     }
 
-    std::unique_ptr<perception::StereoConsumer> stereo;
+    std::unique_ptr<perception::RingPairConsumer> stereo;
     if (stereo_enabled) {
       const uint32_t ref_index = config.stereo.reference_stream;
       const uint32_t other_index = ref_index == 0 ? 1u : 0u;
 
-      stereo = std::make_unique<perception::StereoConsumer>(
+      stereo = std::make_unique<perception::RingPairConsumer>(
           *streams[ref_index]->device_ring, *streams[other_index]->device_ring,
-          config.stereo.consumer, kStereoConsumerId, config.pipeline.device_id);
+          config.stereo.consumer, kRingPairConsumerId, config.pipeline.device_id);
 
       stereo->set_pair_callback([](const perception::ReadLease& /*reference*/,
                                    const perception::ReadLease& /*other*/, int64_t /*skew_ns*/,

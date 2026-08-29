@@ -9,7 +9,7 @@
 #include "display_config.hpp"
 #include "recording_source.hpp"
 #include "stereo_calibration.hpp"
-#include "stereo_consumer.hpp"
+#include "ring_pair_consumer.hpp"
 #include "types.hpp"
 #include "upload_stage.hpp"
 #include "yolo_config.hpp"
@@ -41,7 +41,7 @@ struct StereoConfig {
   uint32_t reference_stream = 0;
 
   // tolerance_ns / retry_attempts / retry_wait, straight through.
-  StereoConsumer::Config consumer;
+  RingPairConsumer::Config consumer;
 
   // Path to the calibration
   std::string calibration_path;

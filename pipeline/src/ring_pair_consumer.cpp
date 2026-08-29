@@ -1,4 +1,4 @@
-#include "stereo_consumer.hpp"
+#include "ring_pair_consumer.hpp"
 
 #include <cstdio>
 #include <stdexcept>
@@ -10,7 +10,7 @@ constexpr std::chrono::microseconds kPollInterval{2000};
 
 }  // namespace
 
-StereoConsumer::StereoConsumer(DeviceRingBuffer& reference, DeviceRingBuffer& other, Config config,
+RingPairConsumer::RingPairConsumer(DeviceRingBuffer& reference, DeviceRingBuffer& other, Config config,
                                uint32_t consumer_id, int device_id)
     : reference_(&reference),
       other_(&other),
@@ -18,28 +18,28 @@ StereoConsumer::StereoConsumer(DeviceRingBuffer& reference, DeviceRingBuffer& ot
       consumer_id_(consumer_id),
       device_id_(device_id) {
   if (consumer_id_ >= reference_->max_consumers() || consumer_id_ >= other_->max_consumers()) {
-    throw std::runtime_error("StereoConsumer: consumer id is outside a ring's max_consumers");
+    throw std::runtime_error("RingPairConsumer: consumer id is outside a ring's max_consumers");
   }
   if (reference_ == other_) {
-    throw std::runtime_error("StereoConsumer: the two rings must be different");
+    throw std::runtime_error("RingPairConsumer: the two rings must be different");
   }
 }
 
-StereoConsumer::~StereoConsumer() { stop(); }
+RingPairConsumer::~RingPairConsumer() { stop(); }
 
-void StereoConsumer::start() {
+void RingPairConsumer::start() {
   if (running_.exchange(true)) return;
   worker_ = std::thread([this] { run(); });
 }
 
-void StereoConsumer::stop() {
+void RingPairConsumer::stop() {
   if (!running_.exchange(false)) return;
   reference_->wake_all();
   other_->wake_all();
   if (worker_.joinable()) worker_.join();
 }
 
-bool StereoConsumer::step(cudaStream_t stream) {
+bool RingPairConsumer::step(cudaStream_t stream) {
   FramePeek peek;
   if (!reference_->view_latest_inplace(peek)) return false;
   if (have_last_ && peek.slot == last_slot_ && peek.slot_seq == last_seq_) return false;
@@ -77,9 +77,9 @@ bool StereoConsumer::step(cudaStream_t stream) {
   if (attempt > 0) late_partner_.fetch_add(1, std::memory_order_relaxed);
 
   cuda_error_check(cudaStreamWaitEvent(stream, reference.data_ready_event(), 0),
-                   "StereoConsumer: cudaStreamWaitEvent(reference)");
+                   "RingPairConsumer: cudaStreamWaitEvent(reference)");
   cuda_error_check(cudaStreamWaitEvent(stream, other.data_ready_event(), 0),
-                   "StereoConsumer: cudaStreamWaitEvent(other)");
+                   "RingPairConsumer: cudaStreamWaitEvent(other)");
 
   const int64_t skew_ns = static_cast<int64_t>(other.timestamp_ns()) -
                           static_cast<int64_t>(reference.timestamp_ns());
@@ -98,10 +98,10 @@ bool StereoConsumer::step(cudaStream_t stream) {
   return true;
 }
 
-std::string StereoConsumer::health_line() const {
+std::string RingPairConsumer::health_line() const {
   char buffer[224];  // six counters at full width, plus the skew
   std::snprintf(buffer, sizeof(buffer),
-                "stereo paired=%llu unpaired=%llu late=%llu missed=%llu skipped=%llu "
+                "pair paired=%llu unpaired=%llu late=%llu missed=%llu skipped=%llu "
                 "max_skew=%.1fus",
                 static_cast<unsigned long long>(paired()),
                 static_cast<unsigned long long>(unpaired()),
@@ -112,9 +112,9 @@ std::string StereoConsumer::health_line() const {
   return buffer;
 }
 
-void StereoConsumer::run() {
+void RingPairConsumer::run() {
   if (cudaSetDevice(device_id_) != cudaSuccess) {
-    std::fprintf(stderr, "stereo: cudaSetDevice failed on the worker thread\n");
+    std::fprintf(stderr, "ring_pair_consumer: cudaSetDevice failed on the worker thread\n");
     running_.store(false, std::memory_order_relaxed);
     return;
   }
@@ -124,7 +124,7 @@ void StereoConsumer::run() {
     try {
       if (!step(stream)) std::this_thread::sleep_for(kPollInterval);
     } catch (const std::exception& e) {
-      std::fprintf(stderr, "stereo: %s\n", e.what());
+      std::fprintf(stderr, "ring_pair_consumer: %s\n", e.what());
     }
   }
   cudaStreamSynchronize(stream);

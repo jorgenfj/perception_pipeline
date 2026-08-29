@@ -8,7 +8,7 @@ add_library(perception_core
   src/device_transform.cpp
   src/transform_stage.cpp
   src/upload_stage.cpp
-  src/stereo_consumer.cpp
+  src/ring_pair_consumer.cpp
   )
 
 target_include_directories(perception_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")

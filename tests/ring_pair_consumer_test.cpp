@@ -1,5 +1,5 @@
 // Behaviour tests for live stereo pairing. Needs a GPU, no camera.
-#include "stereo_consumer.hpp"
+#include "ring_pair_consumer.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -21,7 +21,7 @@ void check(bool ok, const char* what) {
 using perception::CudaStream;
 using perception::DeviceRingBuffer;
 using perception::ReadLease;
-using perception::StereoConsumer;
+using perception::RingPairConsumer;
 using perception::WriteLease;
 using perception::WritePolicy;
 
@@ -45,8 +45,8 @@ void publish(DeviceRingBuffer& ring, cudaStream_t stream, uint64_t timestamp_ns)
   lease.publish(timestamp_ns);
 }
 
-StereoConsumer::Config config(uint32_t retries = 0) {
-  StereoConsumer::Config c;
+RingPairConsumer::Config config(uint32_t retries = 0) {
+  RingPairConsumer::Config c;
   c.tolerance_ns = kTol;
   c.retry_attempts = retries;
   c.retry_wait = std::chrono::milliseconds(1);
@@ -58,7 +58,7 @@ void test_pairs_when_both_present() {
   DeviceRingBuffer b = make_ring();
   CudaStream stream;
 
-  StereoConsumer stereo(a, b, config(), kConsumerId, 0);
+  RingPairConsumer stereo(a, b, config(), kConsumerId, 0);
 
   int64_t seen_skew = 0;
   uint64_t seen_pair_id = ~0ull;
@@ -88,7 +88,7 @@ void test_unpaired_when_partner_absent() {
   DeviceRingBuffer b = make_ring();
   CudaStream stream;
 
-  StereoConsumer stereo(a, b, config(), kConsumerId, 0);
+  RingPairConsumer stereo(a, b, config(), kConsumerId, 0);
 
   publish(a, stream, kPeriod);
   check(!stereo.step(stream), "a reference frame with no partner does not pair");
@@ -112,7 +112,7 @@ void test_moves_on_after_an_unpaired_frame() {
   DeviceRingBuffer b = make_ring();
   CudaStream stream;
 
-  StereoConsumer stereo(a, b, config(), kConsumerId, 0);
+  RingPairConsumer stereo(a, b, config(), kConsumerId, 0);
 
   // An unpairable frame must not wedge the consumer: if the bookkeeping only
   // advanced on success, this frame would be retried forever and the next one
@@ -133,7 +133,7 @@ void test_late_partner_retry() {
   DeviceRingBuffer b = make_ring();
   CudaStream stream;
 
-  StereoConsumer stereo(a, b, config(/*retries=*/5), kConsumerId, 0);
+  RingPairConsumer stereo(a, b, config(/*retries=*/5), kConsumerId, 0);
 
   publish(a, stream, kPeriod);
 
@@ -158,7 +158,7 @@ void test_counts_skipped_reference_frames() {
   DeviceRingBuffer b = make_ring();
   CudaStream stream;
 
-  StereoConsumer stereo(a, b, config(), kConsumerId, 0);
+  RingPairConsumer stereo(a, b, config(), kConsumerId, 0);
 
   // One pair, stepped straight away: nothing had a chance to go past.
   publish(b, stream, kPeriod);
@@ -187,9 +187,9 @@ void test_rejects_bad_construction() {
   DeviceRingBuffer a = make_ring();
   DeviceRingBuffer b = make_ring();
 
-  auto throws = [&](StereoConsumer::Config c, uint32_t id) {
+  auto throws = [&](RingPairConsumer::Config c, uint32_t id) {
     try {
-      StereoConsumer stereo(a, b, c, id, 0);
+      RingPairConsumer stereo(a, b, c, id, 0);
     } catch (const std::exception&) {
       return true;
     }
@@ -200,7 +200,7 @@ void test_rejects_bad_construction() {
 
   bool same_ring_threw = false;
   try {
-    StereoConsumer stereo(a, a, config(), kConsumerId, 0);
+    RingPairConsumer stereo(a, a, config(), kConsumerId, 0);
   } catch (const std::exception&) {
     same_ring_threw = true;
   }
@@ -212,7 +212,7 @@ void test_threaded() {
   DeviceRingBuffer b = make_ring(6);
   CudaStream stream;
 
-  StereoConsumer stereo(a, b, config(/*retries=*/2), kConsumerId, 0);
+  RingPairConsumer stereo(a, b, config(/*retries=*/2), kConsumerId, 0);
   stereo.start();
 
   constexpr int kFrames = 8;

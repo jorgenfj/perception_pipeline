@@ -19,7 +19,7 @@ namespace perception {
 // see the future and a partner that never arrives has to be given up on.
 //
 // Where the CUDA path pairs by asking the other device ring for a timestamp
-// (pipeline/include/stereo_consumer.hpp), this pairs by holding a few frames of
+// (pipeline/include/ring_pair_consumer.hpp), this pairs by holding a few frames of
 // each stream on the host and matching heads. It exists because the viewer and
 // the recorder have to work on a machine with no GPU in it.
 //

@@ -13,13 +13,10 @@
 
 namespace perception {
 
-// The lookup runs at tolerance `config.tolerance_ns`, the same number the
-// offline merge in frame_pairing.hpp uses, and under the same precondition
-// (below half a frame period). Both therefore answer the same question and
-// agree on which frames belong together; they can differ on *yield*, because
-// only the live path can lose a frame to a full device ring or a lagging
-// consumer. See sync_plan.md.
-class StereoConsumer {
+// Pairs two device rings by timestamp: lease the newest frame from `reference`,
+// find the frame in `other` whose stamp is within `config.tolerance_ns`, and
+// hand both leases to the callback.
+class RingPairConsumer {
  public:
   struct Config {
     uint64_t tolerance_ns = 500'000;
@@ -36,12 +33,12 @@ class StereoConsumer {
   using PairCallback = std::function<void(const ReadLease& reference, const ReadLease& other,
                                           int64_t skew_ns, uint64_t pair_id, cudaStream_t stream)>;
 
-  StereoConsumer(DeviceRingBuffer& reference, DeviceRingBuffer& other, Config config,
+  RingPairConsumer(DeviceRingBuffer& reference, DeviceRingBuffer& other, Config config,
                  uint32_t consumer_id, int device_id);
-  ~StereoConsumer();
+  ~RingPairConsumer();
 
-  StereoConsumer(const StereoConsumer&) = delete;
-  StereoConsumer& operator=(const StereoConsumer&) = delete;
+  RingPairConsumer(const RingPairConsumer&) = delete;
+  RingPairConsumer& operator=(const RingPairConsumer&) = delete;
 
   // Must be set before start().
   void set_pair_callback(PairCallback callback) { on_pair_ = std::move(callback); }
@@ -79,7 +76,7 @@ class StereoConsumer {
   // Action Commands armed this should stay in the microseconds.
   int64_t max_abs_skew_ns() const { return max_abs_skew_ns_.load(std::memory_order_relaxed); }
 
-  // e.g. "stereo paired=1204 unpaired=0 late=3 max_skew=41us"
+  // e.g. "pair paired=1204 unpaired=0 late=3 max_skew=41us"
   std::string health_line() const;
 
  private:
