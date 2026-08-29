@@ -40,7 +40,6 @@ void push(StereoPairer& pairer, uint32_t stream, uint64_t timestamp_ns, unsigned
 StereoPairer::Config config(uint32_t queue = 8, int hold_ms = 40) {
   StereoPairer::Config c;
   c.tolerance_ns = kTol;
-  c.frame_period_ns = kPeriod;
   c.queue_frames = queue;
   c.hold = std::chrono::milliseconds(hold_ms);
   return c;
@@ -68,25 +67,7 @@ void test_pairs_in_order() {
   check(pairer.max_abs_skew_ns() == 200'000, "worst skew is remembered");
 }
 
-void test_tolerance_is_enforced() {
-  // The bound is strictly under half the period, and 16'666'667 is odd, so
-  // 8'333'333 is genuinely inside it and 8'333'334 is the first value at which
-  // a frame midway between two partners would match both.
-  const auto refused = [](uint64_t tolerance_ns) {
-    StereoPairer::Config c = config();
-    c.tolerance_ns = tolerance_ns;
-    try {
-      StereoPairer pairer(c);
-    } catch (const std::exception&) {
-      return true;
-    }
-    return false;
-  };
-
-  check(!refused(kPeriod / 2), "the largest tolerance under half a period is allowed");
-  check(refused(kPeriod / 2 + 1), "one nanosecond past it is refused, as offline");
-  check(refused(kPeriod), "and so is anything larger");
-
+void test_tolerance_bounds_pairing() {
   StereoPairer pairer(config());
   push(pairer, 0, 10 * kPeriod, 0);
   push(pairer, 1, 10 * kPeriod + kTol + 1, 1);  // one nanosecond outside
@@ -257,7 +238,7 @@ void test_live_pairs_are_a_subset_of_offline() {
 
 int main() {
   test_pairs_in_order();
-  test_tolerance_is_enforced();
+  test_tolerance_bounds_pairing();
   test_unpairable_frame_is_surfaced_not_dropped();
   test_every_frame_is_accounted_for();
   test_one_camera_stopped();

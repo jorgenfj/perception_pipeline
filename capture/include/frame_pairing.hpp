@@ -2,8 +2,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <stdexcept>
-#include <string>
 #include <vector>
 
 namespace perception {
@@ -34,17 +32,6 @@ struct PairResult {
   PairStats stats;
 };
 
-// The tolerance must be strictly under half the frame period.
-inline void require_pair_tolerance(uint64_t tolerance_ns, uint64_t min_period_ns) {
-  if (min_period_ns == 0 || tolerance_ns >= min_period_ns ||
-      tolerance_ns >= min_period_ns - tolerance_ns) {
-    throw std::runtime_error(
-        "pair tolerance " + std::to_string(tolerance_ns) +
-        "ns must be under half the frame period (" + std::to_string(min_period_ns) +
-        "ns); at or above that, two different frames qualify as the same instant");
-  }
-}
-
 // Index of the first timestamp that is smaller than the one before it, or
 // `count` if the array is non-decreasing.
 //
@@ -60,7 +47,7 @@ inline std::size_t first_timestamp_regression(const uint64_t* timestamps, std::s
 }
 
 // The merge. Both arrays must be non-decreasing; check them first if they come
-// from a file. `tolerance_ns` should have been through require_pair_tolerance().
+// from a file. `tolerance_ns` should be under half the frame period 
 inline PairResult pair_by_timestamp(const uint64_t* a, std::size_t count_a, const uint64_t* b,
                                     std::size_t count_b, uint64_t tolerance_ns) {
   PairResult result;

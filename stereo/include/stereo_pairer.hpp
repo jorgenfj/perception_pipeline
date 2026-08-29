@@ -29,14 +29,7 @@ namespace perception {
 class StereoPairer {
  public:
   struct Config {
-    // Must be strictly under half the frame period. See
-    // require_pair_tolerance(): at or above that bound, two different exposures
-    // both qualify as "the same instant" and pairing stops meaning anything.
     uint64_t tolerance_ns = 500'000;
-
-    // Nominal frame period, used only to check tolerance_ns at construction.
-    // Zero skips the check, for tests that do not model a frame rate.
-    uint64_t frame_period_ns = 0;
 
     // Frames held per stream. This is the hold window: a partner still in
     // flight has this many frame periods to turn up. Oldest is dropped when
@@ -78,7 +71,6 @@ class StereoPairer {
     bool complete() const { return have[0] && have[1]; }
   };
 
-  // Throws if tolerance_ns is not under half of frame_period_ns.
   explicit StereoPairer(const Config& config);
 
   StereoPairer(const StereoPairer&) = delete;

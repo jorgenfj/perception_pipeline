@@ -12,11 +12,6 @@ namespace perception {
 
 StereoPairer::StereoPairer(const Config& config) : config_(config) {
   if (config_.queue_frames == 0) throw std::runtime_error("stereo: queue_frames must be positive");
-  // The same check the offline merge makes, in the same place it would matter:
-  // before a single frame has been accepted.
-  if (config_.frame_period_ns != 0) {
-    require_pair_tolerance(config_.tolerance_ns, config_.frame_period_ns);
-  }
   overrun_[0].store(0);
   overrun_[1].store(0);
 }

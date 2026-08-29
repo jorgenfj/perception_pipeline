@@ -1,7 +1,6 @@
 #include "host_ingress_ring.hpp"
 
 #include <stdexcept>
-#include <string>
 
 #include "cuda_util.hpp"
 

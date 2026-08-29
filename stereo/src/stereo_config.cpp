@@ -40,11 +40,8 @@ StereoConfig load_stereo_config(const std::string& path) {
     // Microseconds in the file, nanoseconds in the code: a tolerance written as
     // 500000 is easy to get wrong by a factor of a thousand, and 500 is not.
     uint64_t tolerance_us = config.tolerance_ns / 1000;
-    uint64_t frame_period_us = 0;
     read(stereo, "tolerance_us", "stereo", tolerance_us);
-    read(stereo, "frame_period_us", "stereo", frame_period_us);
     config.tolerance_ns = tolerance_us * 1000;
-    config.frame_period_ns = frame_period_us * 1000;
 
     read(stereo, "queue_frames", "stereo", config.queue_frames);
     read(stereo, "hold_ms", "stereo", config.hold_ms);

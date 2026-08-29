@@ -642,7 +642,6 @@ int main(int argc, char** argv) {
 
     perception::StereoPairer::Config pairer_config;
     pairer_config.tolerance_ns = config.tolerance_ns;
-    pairer_config.frame_period_ns = config.frame_period_ns;
     pairer_config.queue_frames = config.queue_frames;
     pairer_config.hold = std::chrono::milliseconds(config.hold_ms);
     perception::StereoPairer pairer(pairer_config);

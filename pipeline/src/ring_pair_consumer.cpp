@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <stdexcept>
+#include "cuda_util.hpp"
 
 namespace perception {
 namespace {

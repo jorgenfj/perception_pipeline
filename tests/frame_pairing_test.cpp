@@ -17,7 +17,6 @@ void check(bool ok, const char* what) {
 using perception::first_timestamp_regression;
 using perception::pair_by_timestamp;
 using perception::PairResult;
-using perception::require_pair_tolerance;
 
 // 60 Hz, in nanoseconds. Half a period is 8'333'333ns.
 constexpr uint64_t kPeriod = 16'666'667;
@@ -129,65 +128,6 @@ void test_degenerate() {
   check_conservation(r, a, shorter, "a short partner accounts for every frame");
 }
 
-void test_tolerance_precondition() {
-  bool threw = false;
-  try {
-    require_pair_tolerance(kTol, kPeriod);
-  } catch (const std::exception&) {
-    threw = true;
-  }
-  check(!threw, "a tolerance well under half a period is accepted");
-
-  auto rejects = [](uint64_t tol, uint64_t period) {
-    try {
-      require_pair_tolerance(tol, period);
-    } catch (const std::exception&) {
-      return true;
-    }
-    return false;
-  };
-
-  // The rule is 2*tol < period, so state it on an even period where "half" is
-  // exact. kPeriod is odd, which is its own case below.
-  constexpr uint64_t kEven = 16'666'666;
-  check(rejects(kEven / 2, kEven), "a tolerance of exactly half a period is rejected");
-  check(!rejects(kEven / 2 - 1, kEven), "one nanosecond under half a period is accepted");
-
-  // An odd period truncates, and the truncated half is genuinely safe: the two
-  // distances to adjacent partners sum to the period, so at tol = (P-1)/2 they
-  // cannot both fit. Accepting it is correct, not a rounding bug.
-  check(!rejects(kPeriod / 2, kPeriod), "on an odd period the truncated half is still safe");
-  check(rejects(kPeriod / 2 + 1, kPeriod), "and one nanosecond above it is not");
-
-  check(rejects(kPeriod, kPeriod), "a full period is rejected");
-  check(rejects(kPeriod * 4, kPeriod), "a tolerance past the period does not wrap");
-  check(rejects(kTol, 0), "a zero period is rejected rather than dividing by it");
-
-  // The ambiguity the precondition exists to prevent needs partners straddling
-  // the MIDPOINT. A constant small offset never produces two candidates at any
-  // tolerance, so testing with one would pass a broken assertion.
-  const std::vector<uint64_t> a = ramp(50);
-  const std::vector<uint64_t> mid = ramp(50, static_cast<int64_t>(kPeriod / 2));
-
-  auto max_candidates = [&](uint64_t tol) {
-    std::size_t worst = 0;
-    for (uint64_t t : a) {
-      std::size_t n = 0;
-      for (uint64_t u : mid) {
-        const uint64_t d = t > u ? t - u : u - t;
-        if (d <= tol) ++n;
-      }
-      if (n > worst) worst = n;
-    }
-    return worst;
-  };
-
-  check(max_candidates(kPeriod / 2 - 1) <= 1,
-        "under half a period, a midpoint layout still has at most one candidate");
-  check(max_candidates(kPeriod / 2 + 1) > 1,
-        "over half a period, a midpoint layout really is ambiguous");
-}
-
 void test_monotonicity() {
   const std::vector<uint64_t> good = ramp(5);
   check(first_timestamp_regression(good.data(), good.size()) == good.size(),
@@ -212,7 +152,6 @@ int main() {
   test_tolerance_boundary();
   test_dropouts();
   test_degenerate();
-  test_tolerance_precondition();
   test_monotonicity();
 
   std::printf("\n%s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);

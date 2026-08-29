@@ -7,9 +7,7 @@
 #include <string>
 #include <thread>
 
-#include "cuda_util.hpp"
 #include "device_ring_buffer.hpp"
-#include "types.hpp"
 
 namespace perception {
 

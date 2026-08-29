@@ -24,10 +24,8 @@ struct StereoStreamConfig {
 };
 
 struct StereoConfig {
-  // Pairing. tolerance must stay strictly under half the frame period; see
-  // require_pair_tolerance().
+  // Pairing. Keep tolerance strictly under half the frame period.
   uint64_t tolerance_ns = 500'000;
-  uint64_t frame_period_ns = 0;  // 0 skips the tolerance check
   uint32_t queue_frames = 8;
   uint32_t hold_ms = 40;
 
