@@ -5,3 +5,6 @@ build*/
 .dockerignore
 README.md
 compile_commands.json
+recordings/
+tensorrt/models/*.engine
+tensorrt/models/*.onnx

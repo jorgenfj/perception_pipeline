@@ -2,11 +2,11 @@
 # clang -- it chokes on nvcc-only flags and has to be told where CUDA lives.
 
 # `.clangd` adapts the nvcc command lines for clang: it strips nvcc-only flags
-# such as `-gencode`, and pins an indexing architecture. Note that jammy's clangd
-# is version 14, which predates `sm_87` and refuses CUDA 12.6 — hence
-# `--cuda-gpu-arch=sm_86` and `--no-cuda-version-check`. These affect indexing
-# only and never reach the real build. Installing a newer clangd from
-# [apt.llvm.org](https://apt.llvm.org) lets you drop both.
+# such as `-gencode`, and pins an indexing architecture. The container installs
+# clangd 19 from [apt.llvm.org](https://apt.llvm.org) -- jammy's own clangd 14
+# predates `sm_87`, cannot parse libstdc++ 13's `<chrono>` (C++20 consteval), and
+# trips over CUDA 12's headers. These flags affect indexing only and never reach
+# the real build.
 CompileFlags:
   Remove:
     - -gencode*
@@ -20,10 +20,8 @@ CompileFlags:
   Add:
     - --cuda-path=/usr/local/cuda
     # Indexing-only architecture -- it does not affect what nvcc actually builds.
-    # jammy's clangd is 14, which predates sm_87; sm_86 is the same Ampere ISA
-    # for parsing purposes. Raise this if you install a newer clangd.
-    - --cuda-gpu-arch=sm_86
-    # clang 14 only claims support up to CUDA 11.5 and hard-errors on 12.6.
+    - --cuda-gpu-arch=sm_87
+    # clang 19 knows CUDA up to 12.6 and refuses the toolkit's 12.8 without this.
     - --no-cuda-version-check
     - -I/usr/local/cuda/include
   CompilationDatabase: build
