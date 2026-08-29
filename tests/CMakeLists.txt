@@ -37,4 +37,10 @@ if(PERCEPTION_WITH_CUDA)
   add_executable(upload_stage_test upload_stage_test.cpp)
   target_link_libraries(upload_stage_test PRIVATE perception_core)
   add_test(NAME upload_stage_test COMMAND upload_stage_test)
+
+  # Host-side only -- it builds maps and reads them back. It needs a CUDA build
+  # for perception_processing to exist, but no device.
+  add_executable(rectify_map_test rectify_map_test.cpp)
+  target_link_libraries(rectify_map_test PRIVATE perception_processing)
+  add_test(NAME rectify_map_test COMMAND rectify_map_test)
 endif()

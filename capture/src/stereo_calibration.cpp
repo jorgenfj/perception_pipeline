@@ -2,9 +2,11 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <stdexcept>
+#include <vector>
 
 namespace perception {
 namespace {
@@ -49,23 +51,42 @@ CameraCalibration read_camera(const YAML::Node& node, const std::string& where) 
   cal.role = require_node(node, "role", where).as<std::string>();
   if (node["serial"]) cal.serial = node["serial"].as<std::string>();
 
-  cal.camera_matrix = read_matrix<9>(node, "camera_matrix", where);
+  // The file stays flat and row-major; the geometry types are built from it
+  // here so that this is the only place the layout is interpreted.
+  cal.intrinsics = geometry::CameraIntrinsics::from_row_major(
+      read_matrix<9>(node, "camera_matrix", where));
 
   const YAML::Node distortion = require_node(node, "distortion", where);
   if (distortion["model"]) cal.distortion_model = distortion["model"].as<std::string>();
+  if (cal.distortion_model != "plumb_bob") {
+    fail(where + ".distortion.model",
+         "'" + cal.distortion_model +
+             "' is not supported; this build implements plumb_bob "
+             "[k1 k2 p1 p2 k3] only");
+  }
+
   const YAML::Node coefficients = require_node(distortion, "coefficients", where + ".distortion");
   if (!coefficients.IsSequence()) {
     fail(where + ".distortion.coefficients", "expected a sequence");
   }
+  std::vector<double> raw;
   for (std::size_t i = 0; i < coefficients.size(); ++i) {
-    cal.distortion.push_back(coefficients[i].as<double>());
+    raw.push_back(coefficients[i].as<double>());
+  }
+  try {
+    cal.distortion = geometry::CameraDistortionModel::from_coefficients(raw);
+  } catch (const std::runtime_error& e) {
+    fail(where + ".distortion.coefficients", e.what());
   }
 
   const YAML::Node rect = require_node(node, "rectification", where);
-  cal.rectification_rotation = read_matrix<9>(rect, "rotation", where + ".rectification");
-  cal.rectified_projection = read_matrix<12>(rect, "projection", where + ".rectification");
+  cal.rectification = geometry::Rectification::from_row_major(
+      read_matrix<9>(rect, "rotation", where + ".rectification"),
+      read_matrix<12>(rect, "projection", where + ".rectification"));
 
-  if (cal.camera_matrix[0] <= 0.0 || cal.camera_matrix[4] <= 0.0) {
+  // Checked here rather than left to validate_focals(), so the error names the
+  // key in the file instead of the maths that later trips over it.
+  if (cal.intrinsics.fx <= 0.0 || cal.intrinsics.fy <= 0.0) {
     fail(where + ".camera_matrix", "fx and fy must be positive");
   }
   return cal;
@@ -74,11 +95,11 @@ CameraCalibration read_camera(const YAML::Node& node, const std::string& where) 
 }  // namespace
 
 double StereoCalibration::rectified_baseline_m() const {
-  // P2 = [fx 0 cx  -fx*Tx; ...], so Tx = -P2[3] / fx. Sign dropped: the
+  // P2 = [fx 0 cx  -fx*Tx; ...], so Tx = -P2(0,3) / fx. Sign dropped: the
   // baseline is a distance, and which eye is left is the roles' business.
-  const double fx = camera[0].rectified_projection[0];
+  const double fx = camera[0].rectification.fx();
   if (fx == 0.0) return 0.0;
-  return std::abs(camera[1].rectified_projection[3] / fx);
+  return std::abs(camera[1].rectification.baseline_term() / fx);
 }
 
 std::string StereoCalibration::summary() const {
@@ -118,8 +139,10 @@ StereoCalibration load_stereo_calibration(const std::string& path) {
   }
 
   const YAML::Node extrinsics = require_node(root, "extrinsics", "");
-  cal.rotation = read_matrix<9>(extrinsics, "rotation", "extrinsics");
-  cal.translation_m = read_matrix<3>(extrinsics, "translation_m", "extrinsics");
+  const std::array<double, 9> r = read_matrix<9>(extrinsics, "rotation", "extrinsics");
+  const std::array<double, 3> t = read_matrix<3>(extrinsics, "translation_m", "extrinsics");
+  cal.rotation << r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8];
+  cal.translation_m << t[0], t[1], t[2];
 
   cal.baseline_m = require_node(root, "baseline_m", "").as<double>();
   if (cal.baseline_m <= 0.0) fail("baseline_m", "must be positive");
@@ -127,9 +150,7 @@ StereoCalibration load_stereo_calibration(const std::string& path) {
   // The file states the baseline twice -- once as |T| and once spelled out.
   // Disagreement means someone edited one and not the other, and a wrong
   // baseline scales every depth in the scene without looking wrong.
-  const double norm = std::sqrt(cal.translation_m[0] * cal.translation_m[0] +
-                                cal.translation_m[1] * cal.translation_m[1] +
-                                cal.translation_m[2] * cal.translation_m[2]);
+  const double norm = cal.translation_m.norm();
   if (std::abs(norm - cal.baseline_m) > 1e-4) {
     char detail[192];
     std::snprintf(detail, sizeof(detail),
@@ -139,8 +160,10 @@ StereoCalibration load_stereo_calibration(const std::string& path) {
     fail("baseline_m", detail);
   }
 
-  cal.disparity_to_depth = read_matrix<16>(
+  const std::array<double, 16> q = read_matrix<16>(
       require_node(root, "rectification", ""), "disparity_to_depth", "rectification");
+  cal.disparity_to_depth << q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7], q[8], q[9], q[10],
+      q[11], q[12], q[13], q[14], q[15];
 
   // Same check against the rectified projections, which is where depth is
   // actually computed from -- a Q or a P that was not regenerated alongside the

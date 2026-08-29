@@ -40,4 +40,47 @@ CameraDistortionModel::undistort_normalized(const Eigen::Vector2d &point,
       x_dist, y_dist, iterations, residual, kUndistortTolerance));
 }
 
+
+Eigen::Vector2d rectified_to_source_pixel(
+    const CameraIntrinsics &intrinsics, const CameraDistortionModel &distortion,
+    const Rectification &rectification, double u, double v) {
+  // Rectified pixel -> ray in the rectified frame -> ray in this camera's
+  // own frame, in one matrix: (P_3x3 * R)^-1. R^-1 undoes the rectifying
+  // rotation and P^-1 undoes the rectified projection.
+  const Eigen::Matrix3d forward =
+      rectification.projection_3x3() * rectification.rotation;
+
+  // Well conditioned for any real calibration -- a rotation times an upper
+  // triangular projection -- so a singular one means hand-edited numbers.
+  const double determinant = forward.determinant();
+  if (!(determinant > 1e-12 || determinant < -1e-12)) {
+    throw std::runtime_error(
+        std::format("rectified_to_source_pixel: P * R is singular (det = {})",
+                    determinant));
+  }
+  const Eigen::Matrix3d inverse = forward.inverse();
+
+  const Eigen::Vector3d ray = inverse * Eigen::Vector3d{u, v, 1.0};
+
+  // ray.z() only vanishes for a direction parallel to the image plane, which
+  // no pixel of a real projection produces. Guarded anyway so a hand-edited
+  // calibration gives a finite result rather than a NaN that propagates into
+  // every sample downstream.
+  const double inv_w = (ray.z() != 0.0) ? 1.0 / ray.z() : 0.0;
+  const Eigen::Vector2d normalized{ray.x() * inv_w, ray.y() * inv_w};
+
+  const Eigen::Vector2d distorted = distortion.distort_normalized(normalized);
+
+  // Back out through this camera's own K, into source pixel indices.
+  //
+  // The skew term is a deliberate divergence from OpenCV, whose
+  // initUndistortRectifyMap applies only fx/cx and drops it. The two agree
+  // exactly whenever skew is 0, which is every calibration produced with the
+  // standard flags, and this way one K is applied consistently everywhere in
+  // this header rather than in two subtly different ways.
+  return {intrinsics.fx * distorted.x() + intrinsics.skew * distorted.y() +
+              intrinsics.cx,
+          intrinsics.fy * distorted.y() + intrinsics.cy};
+}
+
 } // namespace perception::geometry

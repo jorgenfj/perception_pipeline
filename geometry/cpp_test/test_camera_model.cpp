@@ -380,3 +380,133 @@ TEST_F(UndistortConvergenceTests, test_the_frame_sits_inside_the_limit) {
                 "margin %.2fx\n",
                 lo, lo / 0.4035);
 }
+
+class RectificationTests : public ::testing::Test {
+   public:
+    RectificationTests() = default;
+    void SetUp() override {}
+};
+
+TEST_F(RectificationTests, test_from_row_major_reads_opencv_layout) {
+    const Rectification rectification = shipped_left_rectification();
+
+    EXPECT_DOUBLE_EQ(rectification.rotation(0, 1), 0.09624063867688702);
+    EXPECT_DOUBLE_EQ(rectification.rotation(1, 0), -0.09624479980195409);
+    EXPECT_DOUBLE_EQ(rectification.fx(), 2619.5697059803665);
+    EXPECT_DOUBLE_EQ(rectification.projection(0, 2), 745.2493591308594);
+    EXPECT_DOUBLE_EQ(rectification.baseline_term(), 0.0);
+}
+
+TEST_F(RectificationTests, test_rectifying_rotations_agree_across_the_pair) {
+    // The invariant that matters: R2 * R == R1, both eyes landing in the SAME
+    // rectified orientation. Bouguet splits R evenly between them, so R1 and
+    // R2 each carry half of it away from a common levelling roll.
+    const Eigen::Matrix3d R1 = shipped_left_rectification().rotation;
+
+    Eigen::Matrix3d R2;
+    R2 << 0.9961549149424362, 0.08760449966380064, 0.0009149178556072229,
+        -0.08760177054709829, 0.996151949769823, -0.0026875205661547707,
+        -0.001146836100276492, 0.0025970383969276044, 0.9999959700711417;
+
+    Eigen::Matrix3d R;  // left -> right, from stereoCalibrate
+    R << 0.9999622862355996, 0.008678895253704862, 0.00032075480980638674,
+        -0.008680474272847443, 0.9999482680785398, 0.005301936733629774,
+        -0.00027472326299085706, -0.00530452108151135, 0.9999858931921113;
+
+    EXPECT_TRUE((R2 * R).isApprox(R1, 1e-12));
+}
+
+class RectifiedToSourcePixelTests : public ::testing::Test {
+   public:
+    RectifiedToSourcePixelTests() = default;
+    void SetUp() override {}
+};
+
+TEST_F(RectifiedToSourcePixelTests, test_identity_calibration_is_identity) {
+    // K == P, R == I, no distortion: every pixel must map to itself. A dropped
+    // term anywhere shows up here as an offset.
+    const CameraIntrinsics intrinsics{
+        .fx = 1050.0, .fy = 1050.0, .cx = 720.0, .cy = 540.0};
+    const CameraDistortionModel distortion;
+
+    Rectification rectification;
+    rectification.rotation = Eigen::Matrix3d::Identity();
+    rectification.projection << 1050.0, 0.0, 720.0, 0.0, 0.0, 1050.0, 540.0,
+        0.0, 0.0, 0.0, 1.0, 0.0;
+
+    for (double v : {0.0, 539.0, 1079.0}) {
+        for (double u : {0.0, 719.0, 1439.0}) {
+            const Eigen::Vector2d source = rectified_to_source_pixel(
+                intrinsics, distortion, rectification, u, v);
+            EXPECT_NEAR(source.x(), u, 1e-9);
+            EXPECT_NEAR(source.y(), v, 1e-9);
+        }
+    }
+}
+
+TEST_F(RectifiedToSourcePixelTests, test_round_trips_through_the_calibration) {
+    // Follow the map to the source pixel, then push that pixel forward by hand
+    // -- undistort, rotate into the rectified frame, project with P -- and land
+    // back where we started. This is what a transposed R or a distortion sign
+    // error breaks.
+    const CameraIntrinsics intrinsics = shipped_left_intrinsics();
+    const CameraDistortionModel distortion = shipped_left_distortion();
+    const Rectification rectification = shipped_left_rectification();
+
+    double worst = 0.0;
+    for (double v = 40.0; v < 1080.0; v += 97.0) {
+        for (double u = 40.0; u < 1440.0; u += 91.0) {
+            const Eigen::Vector2d source = rectified_to_source_pixel(
+                intrinsics, distortion, rectification, u, v);
+
+            const Eigen::Vector2d normalized{
+                (source.x() - intrinsics.cx) / intrinsics.fx,
+                (source.y() - intrinsics.cy) / intrinsics.fy};
+            const Eigen::Vector2d undistorted =
+                distortion.undistort_normalized(normalized);
+
+            const Eigen::Vector3d ray =
+                rectification.rotation *
+                Eigen::Vector3d{undistorted.x(), undistorted.y(), 1.0};
+            const Eigen::Vector2d reprojected{
+                rectification.projection(0, 0) * (ray.x() / ray.z()) +
+                    rectification.projection(0, 2),
+                rectification.projection(1, 1) * (ray.y() / ray.z()) +
+                    rectification.projection(1, 2)};
+
+            worst = std::max(worst, std::abs(reprojected.x() - u));
+            worst = std::max(worst, std::abs(reprojected.y() - v));
+        }
+    }
+    EXPECT_LT(worst, 1e-3) << "worst round-trip error " << worst << " px";
+}
+
+TEST_F(RectifiedToSourcePixelTests, test_baseline_column_is_ignored) {
+    // P(0,3) is the OTHER eye's baseline offset. If it moved this eye's map,
+    // every rectified frame would shift by a baseline's worth of pixels.
+    const CameraIntrinsics intrinsics = shipped_left_intrinsics();
+    const CameraDistortionModel distortion = shipped_left_distortion();
+
+    Rectification without = shipped_left_rectification();
+    Rectification with = shipped_left_rectification();
+    with.projection(0, 3) = -284.86842219049794;
+
+    const Eigen::Vector2d a =
+        rectified_to_source_pixel(intrinsics, distortion, without, 700.0, 500.0);
+    const Eigen::Vector2d b =
+        rectified_to_source_pixel(intrinsics, distortion, with, 700.0, 500.0);
+    EXPECT_EQ(a.x(), b.x());
+    EXPECT_EQ(a.y(), b.y());
+}
+
+TEST_F(RectifiedToSourcePixelTests, test_rejects_singular_projection) {
+    const CameraIntrinsics intrinsics = shipped_left_intrinsics();
+    const CameraDistortionModel distortion = shipped_left_distortion();
+
+    Rectification rectification = shipped_left_rectification();
+    rectification.projection.setZero();
+
+    EXPECT_THROW(rectified_to_source_pixel(intrinsics, distortion,
+                                           rectification, 0.0, 0.0),
+                 std::runtime_error);
+}

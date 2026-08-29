@@ -90,7 +90,8 @@ void test_loads_a_consistent_calibration() {
   check(cal.camera[0].fx() == 1050.0 && cal.camera[0].cx() == 720.0,
         "the intrinsics accessors pick the right cells out of K");
   check(cal.baseline_m == 0.12, "the baseline is read");
-  check(cal.camera[0].distortion.size() == 5 && cal.camera[0].distortion_model == "plumb_bob",
+  check(cal.camera[0].distortion.to_coefficients().size() == 5 &&
+            cal.camera[0].distortion_model == "plumb_bob",
         "the distortion model and its five plumb_bob coefficients are read");
 }
 
@@ -146,6 +147,24 @@ void test_rejects_structural_mistakes() {
   check(short_matrix.find("9") != std::string::npos, "and says how many values it wanted");
 }
 
+// The distortion model is the one field where being wrong is silent: a fisheye
+// or rational calibration read as plumb_bob produces a map that is wrong
+// everywhere and looks entirely plausible. Both are refused at load, which is
+// the earliest point the numbers are known.
+void test_rejects_unsupported_distortion() {
+  const std::string fisheye = load_error(
+      "stereo_calibration_fisheye.yaml", tweaked("model: plumb_bob", "model: fisheye"));
+  check(fisheye.find("fisheye") != std::string::npos,
+        "a non-plumb_bob distortion model is refused, naming it");
+
+  const std::string rational =
+      load_error("stereo_calibration_rational.yaml",
+                 tweaked("coefficients: [0.0, 0.0, 0.0, 0.0, 0.0]",
+                         "coefficients: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]"));
+  check(rational.find("coefficients") != std::string::npos,
+        "an eight-coefficient rational model is refused, not truncated");
+}
+
 // The file app/config/ ships. Its numbers are placeholders, but it has to parse
 // and satisfy every consistency check, or the first person to copy it as a
 // template starts from something broken.
@@ -176,6 +195,7 @@ int main() {
   test_rejects_an_inconsistent_baseline();
   test_rejects_stale_rectification();
   test_rejects_structural_mistakes();
+  test_rejects_unsupported_distortion();
   test_the_shipped_calibration_parses();
 
   std::printf("\n%s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
