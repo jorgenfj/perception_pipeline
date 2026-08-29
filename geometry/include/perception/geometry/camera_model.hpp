@@ -1,0 +1,316 @@
+#ifndef PERCEPTION_GEOMETRY_CAMERA_MODEL_HPP
+#define PERCEPTION_GEOMETRY_CAMERA_MODEL_HPP
+
+#include <array>
+#include <eigen3/Eigen/Dense>
+#include <format>
+#include <stdexcept>
+#include <vector>
+
+namespace perception::geometry {
+
+/**
+ * @brief Pinhole camera intrinsics.
+ *
+ * Pixel units, for the *unrectified* image at the size the calibration was
+ * solved at. Intrinsics do not scale: a set fitted at one resolution is not a
+ * scale factor away from correct at another, it is simply wrong.
+ */
+struct CameraIntrinsics {
+  double fx{};
+  double fy{};
+  double cx{};
+  double cy{};
+  double skew{0.0};
+
+  void validate_focals() const {
+    if (fx <= 0.0 || fy <= 0.0) {
+      throw std::runtime_error(std::format(
+          "Invalid Camera Matrix K. Focals fx and fy must be positive:\n"
+          "fx = {}, fy = {}",
+          fx, fy));
+    }
+  }
+
+  /**
+   * @brief Get the camera intrinsic matrix K
+   * according to Eq. (2.57) in Szeliski, 2022.
+   * @return Eigen::Matrix3d K
+   */
+  Eigen::Matrix3d K() const {
+    Eigen::Matrix3d k = Eigen::Matrix3d::Identity();
+    k(0, 0) = fx;
+    k(0, 1) = skew;
+    k(0, 2) = cx;
+    k(1, 1) = fy;
+    k(1, 2) = cy;
+
+    return k;
+  }
+
+  /**
+   * @brief Get the inverse camera intrinsic matrix K
+   * @return Eigen::Matrix3d K_inv
+   */
+  Eigen::Matrix3d K_inv() const {
+    Eigen::Matrix3d k_inv = Eigen::Matrix3d::Identity();
+    k_inv(0, 0) = 1.0 / fx;
+    k_inv(1, 1) = 1.0 / fy;
+    k_inv(1, 2) = -cy / fy;
+
+    if (skew != 0.0) {
+      k_inv(0, 1) = -skew / (fx * fy);
+      k_inv(0, 2) = (skew * cy - cx * fy) / (fx * fy);
+    } else {
+      k_inv(0, 2) = -cx / fx;
+    }
+
+    return k_inv;
+  }
+
+  /**
+   * @brief Project a 3D point expressed in the camera coordinate frame
+   *        onto the image sensor, producing pixel coordinates.
+   *
+   * This function implements the pinhole camera model by:
+   *  1) applying perspective division (Eq. 2.50 in Szeliski),
+   *  2) mapping normalized image coordinates to pixel coordinates
+   *     using the camera intrinsics (Eq. 2.54 with K defined in Eq. 2.57).
+   *
+   * @param point 3D point in camera coordinates (Xc, Yc, Zc), with Zc > 0.
+   * @return 2D pixel coordinates (u, v).
+   *
+   * @throws std::runtime_error if Zc <= 0.
+   */
+  Eigen::Vector2d project_point(const Eigen::Vector3d &point) const {
+    const double x_c = point.x();
+    const double y_c = point.y();
+    const double z_c = point.z();
+    if (z_c <= 0.0) {
+      throw std::runtime_error(
+          "Projection of point failed. Can't project with z <= 0.");
+    }
+    const double x_norm = x_c / z_c;
+    const double y_norm = y_c / z_c;
+
+    const double u = fx * x_norm + skew * y_norm + cx;
+    const double v = fy * y_norm + cy;
+
+    return {u, v};
+  }
+
+  /**
+   * @brief Backproject a pixel using the inverse intrinsics matrix to produce
+   * a ray through the pixel. The ray is in normalized image coordinates with
+   * z = 1.0 and is not necessarily normalized.
+   * @param pixel Eigen::Vector2d representing camera pixel coordinates.
+   * @return ray in camera space (x, y, 1.0).
+   */
+  Eigen::Vector3d backproject_ray(const Eigen::Vector2d &pixel) const {
+    const double u = pixel(0);
+    const double v = pixel(1);
+
+    const double x =
+        u / fx - v * skew / (fx * fy) + (skew * cy - cx * fy) / (fx * fy);
+    const double y = v / fy - cy / fy;
+
+    return {x, y, 1.0};
+  }
+
+  /**
+   * @brief Backproject a pixel using the inverse intrinsics matrix and a
+   * depth value to compute the corresponding 3D point.
+   * @param pixel Eigen::Vector2d representing camera pixel coordinates.
+   * @param depth Depth for the corresponding pixel.
+   * @return 3D point in camera space
+   *
+   * @throws std::runtime_error if depth <= 0.
+   */
+  Eigen::Vector3d backproject_point(const Eigen::Vector2d &pixel,
+                                    double depth) const {
+    if (depth <= 0.0) {
+      throw std::runtime_error(
+          "Backprojection failed. Depth must be positive.");
+    }
+    return depth * backproject_ray(pixel);
+  }
+
+  /**
+   * @brief Build intrinsics from a row-major 3x3 K, the layout OpenCV dumps
+   * and the calibration YAML stores.
+   * @param k Row-major [fx s cx; 0 fy cy; 0 0 1].
+   * @return CameraIntrinsics
+   */
+  static CameraIntrinsics from_row_major(const std::array<double, 9> &k) {
+    return CameraIntrinsics{
+        .fx = k[0], .fy = k[4], .cx = k[2], .cy = k[5], .skew = k[1]};
+  }
+
+  /**
+   * @brief Inverse of from_row_major(), for writing a calibration back out.
+   * @return Row-major 3x3 K.
+   */
+  std::array<double, 9> to_row_major() const {
+    return {fx, skew, cx, 0.0, fy, cy, 0.0, 0.0, 1.0};
+  }
+};
+
+/**
+ * @brief Brown-Conrady (OpenCV "plumb_bob") lens distortion, [k1 k2 p1 p2 k3].
+ */
+struct CameraDistortionModel {
+  double k1{0.0};
+  double k2{0.0};
+  double p1{0.0};
+  double p2{0.0};
+  double k3{0.0};
+
+  /**
+   * @brief Distort a point in normalized image coordinates following the
+   * Brown-Conrady forward distortion model. This matches the OpenCV
+   * convention.
+   * @param point Eigen::Vector2d representing and undistorted point in
+   * normalized image coordinates.
+   * @return 2D distorted point in normalized image coordinates.
+   */
+  Eigen::Vector2d distort_normalized(const Eigen::Vector2d &point) const {
+    const double x = point.x();
+    const double y = point.y();
+    const double r2 = x * x + y * y;
+    const double r4 = r2 * r2;
+    const double r6 = r4 * r2;
+
+    const double r_dist = 1.0 + k1 * r2 + k2 * r4 + k3 * r6;
+    const double t_dist_x = 2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x);
+    const double t_dist_y = p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y;
+
+    const double x_dist = r_dist * x + t_dist_x;
+    const double y_dist = r_dist * y + t_dist_y;
+
+    return {x_dist, y_dist};
+  }
+
+  /** Convergence target for undistort_normalized(), in normalized units.
+  */
+  static constexpr double kUndistortTolerance = 1e-9;
+
+  /**
+   * @brief Invert distort_normalized() by fixed-point iteration on the
+   * forward model, as cv::undistortPoints does.
+   *
+   * There is no closed form: the forward model is a polynomial in the
+   * undistorted radius, so the inverse is found by repeatedly solving for the
+   * radial term and subtracting the tangential one.
+   *
+   * It does not converge everywhere, and the iterate can grow without bound
+   *
+   * @param point Distorted point in normalized image coordinates.
+   * @param iterations Fixed-point steps. 
+   * @return Undistorted point in normalized image coordinates.
+   *
+   * @throws std::runtime_error if the iteration has not converged to
+   *         kUndistortTolerance within `iterations` steps
+   */
+  Eigen::Vector2d undistort_normalized(const Eigen::Vector2d &point,
+                                       int iterations = 40) const;
+
+  /**
+   * @brief Build the model from a coefficient vector in OpenCV's order.
+   *
+   * @param coefficients [k1 k2 p1 p2 k3], exactly five.
+   * @return CameraDistortionModel
+   *
+   * @throws std::runtime_error unless exactly five coefficients are given.
+   */
+  static CameraDistortionModel
+  from_coefficients(const std::vector<double> &coefficients) {
+    if (coefficients.size() != 5) {
+      throw std::runtime_error(std::format(
+          "{} distortion coefficients; plumb_bob takes 5 "
+          "[k1 k2 p1 p2 k3], and the rational/thin-prism/tilted terms are "
+          "not implemented",
+          coefficients.size()));
+    }
+
+    return CameraDistortionModel{.k1 = coefficients.at(0),
+                                 .k2 = coefficients.at(1),
+                                 .p1 = coefficients.at(2),
+                                 .p2 = coefficients.at(3),
+                                 .k3 = coefficients.at(4)};
+  }
+
+  /**
+   * @brief Inverse of from_coefficients(), always five long.
+   * @return [k1 k2 p1 p2 k3]
+   */
+  std::vector<double> to_coefficients() const { return {k1, k2, p1, p2, k3}; }
+};
+
+/**
+ * @brief One eye's half of a stereo rectification
+ *
+ */
+struct Rectification {
+  /** R1 or R2: rotation taking this camera into the rectified frame. */
+  Eigen::Matrix3d rotation{Eigen::Matrix3d::Identity()};
+
+  /** P1 or P2: the rectified projection, 3x4. */
+  Eigen::Matrix<double, 3, 4> projection{Eigen::Matrix<double, 3, 4>::Zero()};
+
+  /** @brief The 3x3 left block of P, which is the rectified K. */
+  Eigen::Matrix3d projection_3x3() const { return projection.leftCols<3>(); }
+
+  /** @brief Rectified focal length, P(0,0). */
+  double fx() const { return projection(0, 0); }
+
+  /**
+   * @brief P(0,3), which is -fx * baseline for the second camera and 0 for
+   * the first. This is where the baseline enters the disparity maths.
+   */
+  double baseline_term() const { return projection(0, 3); }
+
+  /**
+   * @brief Build from the row-major arrays the calibration YAML stores.
+   * @param r Row-major 3x3 rotation (R1 or R2).
+   * @param p Row-major 3x4 projection (P1 or P2).
+   * @return Rectification
+   */
+  static Rectification from_row_major(const std::array<double, 9> &r,
+                                      const std::array<double, 12> &p) {
+    Rectification rect;
+    rect.rotation << r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8];
+    rect.projection << p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8],
+        p[9], p[10], p[11];
+    return rect;
+  }
+};
+
+/**
+ * @brief For one pixel of the rectified output, the pixel in the *source*
+ * image that it samples.
+ *
+ * This is the body of cv::initUndistortRectifyMap: invert the rectifying
+ * rotation and the rectified projection to get the ray this output pixel
+ * looks along, re-apply the lens distortion, then project through the
+ * camera's own K.
+ *
+ * Note that P(0,3) plays no part. The fourth column of P translates the
+ * rectified camera along its own x axis, which moves where the *other* eye
+ * sees a point, not where this eye samples.
+ *
+ * @param intrinsics This camera's unrectified K.
+ * @param distortion This camera's lens distortion.
+ * @param rectification This camera's R and P from stereoRectify.
+ * @param u Rectified pixel column index.
+ * @param v Rectified pixel row index.
+ * @return Source pixel coordinate (u, v), in pixel-index convention.
+ *
+ * @throws std::runtime_error if P * R is singular, or focals are not positive.
+ */
+Eigen::Vector2d rectified_to_source_pixel(
+    const CameraIntrinsics &intrinsics, const CameraDistortionModel &distortion,
+    const Rectification &rectification, double u, double v);
+
+} // namespace perception::geometry
+
+#endif // PERCEPTION_GEOMETRY_CAMERA_MODEL_HPP
