@@ -19,7 +19,7 @@ namespace perception::geometry {
  *
  * K = [fx, 0.0, cx]
  *     [0.0, fy, cy]
- *     [0.0 0.0, 1.0]  
+ *     [0.0 0.0, 1.0]
  *
  * Non-zero skew is not supported.
  */
@@ -68,6 +68,33 @@ struct CameraIntrinsics {
   }
 
   /**
+   * @brief Map a pixel to normalized image coordinates, the point where its
+   * ray crosses the z = 1 plane.
+   *
+   * This is K_inv() applied to the pixel in homogeneous form, written out
+   * rather than built as a matrix product.
+   *
+   * @param pixel Eigen::Vector2d representing camera pixel coordinates.
+   * @return 2D point in normalized image coordinates.
+   */
+  Eigen::Vector2d pixel_to_normalized(const Eigen::Vector2d &pixel) const {
+    return {(pixel.x() - cx) / fx, (pixel.y() - cy) / fy};
+  }
+
+  /**
+   * @brief Map normalized image coordinates back to pixel coordinates.
+   *
+   * The the mapping from normalized coords to pixel coords using K,
+   * written out rather than built as a matrix product.
+   *
+   * @param normalized 2D point in normalized image coordinates.
+   * @return 2D pixel coordinates (u, v).
+   */
+  Eigen::Vector2d normalized_to_pixel(const Eigen::Vector2d &normalized) const {
+    return {fx * normalized.x() + cx, fy * normalized.y() + cy};
+  }
+
+  /**
    * @brief Project a 3D point expressed in the camera coordinate frame
    *        onto the image sensor, producing pixel coordinates.
    *
@@ -82,20 +109,11 @@ struct CameraIntrinsics {
    * @throws std::runtime_error if Zc <= 0.
    */
   Eigen::Vector2d project_point(const Eigen::Vector3d &point) const {
-    const double x_c = point.x();
-    const double y_c = point.y();
-    const double z_c = point.z();
-    if (z_c <= 0.0) {
+    if (point.z() <= 0.0) {
       throw std::runtime_error(
           "Projection of point failed. Can't project with z <= 0.");
     }
-    const double x_norm = x_c / z_c;
-    const double y_norm = y_c / z_c;
-
-    const double u = fx * x_norm + cx;
-    const double v = fy * y_norm + cy;
-
-    return {u, v};
+    return normalized_to_pixel(point.hnormalized());
   }
 
   /**
@@ -106,13 +124,7 @@ struct CameraIntrinsics {
    * @return ray in camera space (x, y, 1.0).
    */
   Eigen::Vector3d backproject_ray(const Eigen::Vector2d &pixel) const {
-    const double u = pixel(0);
-    const double v = pixel(1);
-
-    const double x = u / fx - cx / fx;
-    const double y = v / fy - cy / fy;
-
-    return {x, y, 1.0};
+    return pixel_to_normalized(pixel).homogeneous();
   }
 
   /**
@@ -198,7 +210,7 @@ struct CameraDistortionModel {
   }
 
   /** Convergence target for undistort_normalized(), in normalized units.
-  */
+   */
   static constexpr double kUndistortTolerance = 1e-9;
 
   /**
