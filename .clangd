@@ -28,3 +28,11 @@ CompileFlags:
 
 Diagnostics:
   UnusedIncludes: Strict
+  # IncludeCleaner walks Eigen's internal headers and asks for
+  # <eigen3/Eigen/src/Core/...> directly. <eigen3/Eigen/Dense> is the
+  # supported entry point, so the suggestions are all noise.
+  MissingIncludes: None
+
+Completion:
+  # Never insert an #include as a side effect of accepting a completion.
+  HeaderInsertion: Never

@@ -1,6 +1,7 @@
 #include "transforms/rectify_map.hpp"
 
 #include <cstddef>
+#include <optional>
 #include <stdexcept>
 
 #include <perception/geometry/camera_model.hpp>
@@ -20,7 +21,7 @@ std::vector<float2> build_rectify_map(const CameraCalibration& camera, uint32_t 
   // Once, here, rather than per pixel inside rectified_to_source_pixel: the
   // intrinsics cannot change during the loop, and an fx of 0 would otherwise
   // put the principal point in every entry of the map without complaint.
-  camera.intrinsics.validate_focals();
+  camera.intrinsics.validate_intrinsics();
 
   // Texture coordinates put texel centres on the half-integers, so pixel index
   // i is sampled at i + 0.5. The map holds texture coordinates, not indices,
@@ -32,13 +33,19 @@ std::vector<float2> build_rectify_map(const CameraCalibration& camera, uint32_t 
 
   for (uint32_t v = 0; v < height; ++v) {
     for (uint32_t u = 0; u < width; ++u) {
-      const Eigen::Vector2d source = geometry::rectified_to_source_pixel(
-          camera.intrinsics, camera.distortion, camera.rectification,
-          static_cast<double>(u), static_cast<double>(v));
+      const std::optional<Eigen::Vector2d> source =
+          geometry::rectified_to_source_pixel(
+              camera.intrinsics, camera.distortion, camera.rectification,
+              static_cast<double>(u), static_cast<double>(v));
+
+      if (!source) {
+        map[static_cast<std::size_t>(v) * width + u] = make_float2(-1.0f, -1.0f);
+        continue;
+      }
 
       map[static_cast<std::size_t>(v) * width + u] =
-          make_float2(static_cast<float>((source.x() + 0.5) * u_scale),
-                      static_cast<float>((source.y() + 0.5) * v_scale));
+          make_float2(static_cast<float>((source->x() + 0.5) * u_scale),
+                      static_cast<float>((source->y() + 0.5) * v_scale));
     }
   }
   return map;

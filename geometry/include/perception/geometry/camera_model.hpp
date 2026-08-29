@@ -2,8 +2,10 @@
 #define PERCEPTION_GEOMETRY_CAMERA_MODEL_HPP
 
 #include <array>
+#include <cmath>
 #include <eigen3/Eigen/Dense>
 #include <format>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -29,14 +31,67 @@ struct CameraIntrinsics {
   double cx{};
   double cy{};
 
-  void validate_focals() const {
-    if (fx <= 0.0 || fy <= 0.0) {
+  /**
+   * @brief Check that a 3x3 matrix is a camera matrix this model can
+   * represent: upper triangular with a [0 0 1] bottom row, zero skew, finite
+   * principal point and strictly positive focals.
+   *
+   * @param k Candidate camera matrix.
+   *
+   * @throws std::runtime_error if any of the above does not hold.
+   */
+  /**
+   * Absolute tolerance for K's structural entries: the zeros below the
+   * diagonal, the zero skew, and the 1 in the corner.
+   *
+   */
+  static constexpr double kStructureTolerance = 1e-9;
+
+  static void validate_intrinsics(const Eigen::Matrix3d &k) {
+    const auto is_zero = [](double value) {
+      return std::abs(value) <= kStructureTolerance;
+    };
+
+    if (!is_zero(k(1, 0)) || !is_zero(k(2, 0)) || !is_zero(k(2, 1)) ||
+        !(std::abs(k(2, 2) - 1.0) <= kStructureTolerance)) {
       throw std::runtime_error(std::format(
-          "Invalid Camera Matrix K. Focals fx and fy must be positive:\n"
-          "fx = {}, fy = {}",
-          fx, fy));
+          "Invalid Camera Matrix K. K must be upper triangular with bottom "
+          "row [0 0 1]:\n"
+          "[{}, {}, {}]\n[{}, {}, {}]\n[{}, {}, {}]",
+          k(0, 0), k(0, 1), k(0, 2), k(1, 0), k(1, 1), k(1, 2), k(2, 0),
+          k(2, 1), k(2, 2)));
+    }
+    if (!is_zero(k(0, 1))) {
+      throw std::runtime_error(std::format(
+          "Invalid Camera Matrix K. Non-zero skew ({}) is not supported.",
+          k(0, 1)));
+    }
+    if (!(k(0, 0) > 0.0) || !(k(1, 1) > 0.0) || !std::isfinite(k(0, 0)) ||
+        !std::isfinite(k(1, 1))) {
+      throw std::runtime_error(std::format(
+          "Invalid Camera Matrix K. Focals fx and fy must be positive and "
+          "finite:\nfx = {}, fy = {}",
+          k(0, 0), k(1, 1)));
+    }
+    if (!std::isfinite(k(0, 2)) || !std::isfinite(k(1, 2))) {
+      throw std::runtime_error(std::format(
+          "Invalid Camera Matrix K. Principal point must be finite:\n"
+          "cx = {}, cy = {}",
+          k(0, 2), k(1, 2)));
     }
   }
+
+  /**
+   * @brief Validate this camera's own K().
+   *
+   * The structural checks hold by construction here -- K() builds the zeros
+   * and the 1 -- so in practice this validates the focals and the principal
+   * point. It shares one implementation, and one error text, with the check
+   * applied to a K read off disk.
+   *
+   * @throws std::runtime_error if the intrinsics are not usable.
+   */
+  void validate_intrinsics() const { validate_intrinsics(K()); }
 
   /**
    * @brief Get the camera intrinsic matrix K
@@ -152,16 +207,11 @@ struct CameraIntrinsics {
    * @return CameraIntrinsics
    */
   static CameraIntrinsics from_row_major(const std::array<double, 9> &k) {
-    if (k[1] != 0.0) {
-      throw std::runtime_error(std::format(
-          "Non-zero skew ({}) in K. The rectification and disparity paths "
-          "assume zero skew; a sheared K here indicates a pre-warped image "
-          "or a bad calibration.",
-          k[1]));
-    }
-    CameraIntrinsics intr{.fx = k[0], .fy = k[4], .cx = k[2], .cy = k[5]};
-    intr.validate_focals();
-    return intr;
+    Eigen::Matrix3d m;
+    m << k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7], k[8];
+    validate_intrinsics(m);
+
+    return CameraIntrinsics{.fx = k[0], .fy = k[4], .cx = k[2], .cy = k[5]};
   }
 
   /**
@@ -169,7 +219,7 @@ struct CameraIntrinsics {
    * @return Row-major 3x3 K.
    */
   std::array<double, 9> to_row_major() const {
-    this->validate_focals();
+    this->validate_intrinsics();
     return {fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0};
   }
 };
@@ -209,8 +259,7 @@ struct CameraDistortionModel {
     return {x_dist, y_dist};
   }
 
-  /** Convergence target for undistort_normalized(), in normalized units.
-   */
+  /** Convergence target for undistort_normalized(), in normalized units. */
   static constexpr double kUndistortTolerance = 1e-9;
 
   /**
@@ -270,23 +319,49 @@ struct CameraDistortionModel {
  *
  */
 struct Rectification {
-  /** R1 or R2: rotation taking this camera into the rectified frame. */
+  /** R1 or R2: rotation taking this camera into the rectified frame. 
+   */
   Eigen::Matrix3d rotation{Eigen::Matrix3d::Identity()};
 
-  /** P1 or P2: the rectified projection, 3x4. */
+  /** P1 or P2: the rectified projection, 3x4. 
+   *
+   * The upper-left 3x3 block of the projection matrix
+   * contains the common rectified intrinsic matrix.
+   *
+   */
   Eigen::Matrix<double, 3, 4> projection{Eigen::Matrix<double, 3, 4>::Zero()};
 
-  /** @brief The 3x3 left block of P, which is the rectified K. */
-  Eigen::Matrix3d projection_3x3() const { return projection.leftCols<3>(); }
-
-  /** @brief Rectified focal length, P(0,0). */
-  double fx() const { return projection(0, 0); }
+  /**
+   * @brief The rectified camera's intrinsics — the left 3x3 of P.
+   *
+   * This is *not* the same as the camera's own K. Rectification generally
+   * changes the focal length and principal point, and the rectified camera
+   * has no distortion.
+   */
+  CameraIntrinsics rectified_intrinsics() const {
+    return CameraIntrinsics{.fx = projection(0, 0),
+                            .fy = projection(1, 1),
+                            .cx = projection(0, 2),
+                            .cy = projection(1, 2)};
+  }
 
   /**
    * @brief P(0,3), which is -fx * baseline for the second camera and 0 for
    * the first. This is where the baseline enters the disparity maths.
    */
   double baseline_term() const { return projection(0, 3); }
+
+  /**
+   * @brief The stereo baseline this projection implies, in metres.
+   *
+   * P(0,3) is -fx * Tx and P(0,0) is fx, so the baseline is -P(0,3) / P(0,0). Positive for the
+   * second camera of a left-right pair, and 0 for the first, which carries no
+   * offset.
+   *
+   */
+  double baseline() const {
+    return -projection(0, 3) / projection(0, 0);
+  }
 
   /**
    * @brief Build from the row-major arrays the calibration YAML stores.
@@ -300,13 +375,22 @@ struct Rectification {
     rect.rotation << r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8];
     rect.projection << p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8],
         p[9], p[10], p[11];
+
+    const Eigen::Matrix3d &R = rect.rotation;
+    if (!(R.transpose() * R).isApprox(Eigen::Matrix3d::Identity(), 1e-9) ||
+        R.determinant() < 0.0) {
+      throw std::runtime_error("Rectification: R is not a proper rotation");
+    }
+
+    CameraIntrinsics::validate_intrinsics(rect.projection.leftCols<3>());
+
     return rect;
   }
 };
 
 /**
- * @brief For one pixel of the rectified output, the pixel in the *source*
- * image that it samples.
+ * @brief For one pixel of the rectified output, get the pixel in the
+ * *source* image that it samples.
  *
  * This is the body of cv::initUndistortRectifyMap: invert the rectifying
  * rotation and the rectified projection to get the ray this output pixel
@@ -322,11 +406,11 @@ struct Rectification {
  * @param rectification This camera's R and P from stereoRectify.
  * @param u Rectified pixel column index.
  * @param v Rectified pixel row index.
- * @return Source pixel coordinate (u, v), in pixel-index convention.
- *
- * @throws std::runtime_error if P * R is singular, or focals are not positive.
+ * @return Source pixel coordinate (u, v) in pixel-index convention, or
+ *         std::nullopt if this rectified pixel looks behind the camera and
+ *         no source pixel exists.
  */
-Eigen::Vector2d rectified_to_source_pixel(
+std::optional<Eigen::Vector2d> rectified_to_source_pixel(
     const CameraIntrinsics &intrinsics, const CameraDistortionModel &distortion,
     const Rectification &rectification, double u, double v);
 

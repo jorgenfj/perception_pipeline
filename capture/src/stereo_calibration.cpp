@@ -84,8 +84,6 @@ CameraCalibration read_camera(const YAML::Node& node, const std::string& where) 
       read_matrix<9>(rect, "rotation", where + ".rectification"),
       read_matrix<12>(rect, "projection", where + ".rectification"));
 
-  // Checked here rather than left to validate_focals(), so the error names the
-  // key in the file instead of the maths that later trips over it.
   if (cal.intrinsics.fx <= 0.0 || cal.intrinsics.fy <= 0.0) {
     fail(where + ".camera_matrix", "fx and fy must be positive");
   }
@@ -95,11 +93,11 @@ CameraCalibration read_camera(const YAML::Node& node, const std::string& where) 
 }  // namespace
 
 double StereoCalibration::rectified_baseline_m() const {
-  // P2 = [fx 0 cx  -fx*Tx; ...], so Tx = -P2(0,3) / fx. Sign dropped: the
-  // baseline is a distance, and which eye is left is the roles' business.
-  const double fx = camera[0].rectification.fx();
-  if (fx == 0.0) return 0.0;
-  return std::abs(camera[1].rectification.baseline_term() / fx);
+  // Sign dropped: the baseline is a distance, and which eye is left is the
+  // roles' business. baseline() owns the -P2(0,3) / fx convention, and throws
+  // on a projection it cannot divide through -- the same stance as the loader
+  // above, where an approximate calibration is worse than none.
+  return std::abs(camera[1].rectification.baseline());
 }
 
 std::string StereoCalibration::summary() const {

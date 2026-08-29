@@ -155,10 +155,10 @@ TEST_F(CameraIntrinsicsTests, test_from_row_major_rejects_skew) {
 TEST_F(CameraIntrinsicsTests, test_rejects_non_positive_focals) {
     CameraIntrinsics intrinsics = shipped_left_intrinsics();
     intrinsics.fx = 0.0;
-    EXPECT_THROW(intrinsics.validate_focals(), std::runtime_error);
+    EXPECT_THROW(intrinsics.validate_intrinsics(), std::runtime_error);
 
     // NOTE: K(), K_inv(), project_point() and backproject_ray() no longer call
-    // validate_focals() -- only rectified_to_source_pixel() does. So K_inv()
+    // validate_intrinsics() -- only rectified_to_source_pixel() does. So K_inv()
     // with fx = 0 returns inf rather than throwing. Asserted here as the
     // current contract; see the note in the review if that was not intended.
     EXPECT_NO_THROW(intrinsics.K());
@@ -166,7 +166,7 @@ TEST_F(CameraIntrinsicsTests, test_rejects_non_positive_focals) {
 
     intrinsics.fx = 100.0;
     intrinsics.fy = -1.0;
-    EXPECT_THROW(intrinsics.validate_focals(), std::runtime_error);
+    EXPECT_THROW(intrinsics.validate_intrinsics(), std::runtime_error);
 }
 
 TEST_F(CameraIntrinsicsTests, test_rejects_projection_behind_the_camera) {
@@ -307,7 +307,14 @@ TEST_F(UndistortConvergenceTests, test_converges_across_the_whole_frame) {
         }
     }
 
-    EXPECT_LT(worst, 1e-12) << "worst round trip " << worst;
+    // Against the model's own documented contract, not a tighter number.
+    // The iteration stops once a step moves the iterate less than
+    // kUndistortTolerance, so that is what it promises; the old 1e-12 here
+    // measured how far past the promise 40 unconditional iterations happened
+    // to run. Worst observed on this rig is ~4.4e-11 normalized, which is
+    // ~1e-7 px at this focal length.
+    EXPECT_LT(worst, CameraDistortionModel::kUndistortTolerance)
+        << "worst round trip " << worst;
     // Sanity that the sweep really covered the frame corners.
     EXPECT_GT(worst_radius, 0.40);
 }
@@ -388,7 +395,8 @@ TEST_F(RectificationTests, test_from_row_major_reads_opencv_layout) {
 
     EXPECT_DOUBLE_EQ(rectification.rotation(0, 1), 0.09624063867688702);
     EXPECT_DOUBLE_EQ(rectification.rotation(1, 0), -0.09624479980195409);
-    EXPECT_DOUBLE_EQ(rectification.fx(), 2619.5697059803665);
+    EXPECT_DOUBLE_EQ(rectification.rectified_intrinsics().fx,
+                     2619.5697059803665);
     EXPECT_DOUBLE_EQ(rectification.projection(0, 2), 745.2493591308594);
     EXPECT_DOUBLE_EQ(rectification.baseline_term(), 0.0);
 }
@@ -432,10 +440,11 @@ TEST_F(RectifiedToSourcePixelTests, test_identity_calibration_is_identity) {
 
     for (double v : {0.0, 539.0, 1079.0}) {
         for (double u : {0.0, 719.0, 1439.0}) {
-            const Eigen::Vector2d source = rectified_to_source_pixel(
+            const auto source = rectified_to_source_pixel(
                 intrinsics, distortion, rectification, u, v);
-            EXPECT_NEAR(source.x(), u, 1e-9);
-            EXPECT_NEAR(source.y(), v, 1e-9);
+            ASSERT_TRUE(source.has_value());
+            EXPECT_NEAR(source->x(), u, 1e-9);
+            EXPECT_NEAR(source->y(), v, 1e-9);
         }
     }
 }
@@ -452,12 +461,13 @@ TEST_F(RectifiedToSourcePixelTests, test_round_trips_through_the_calibration) {
     double worst = 0.0;
     for (double v = 40.0; v < 1080.0; v += 97.0) {
         for (double u = 40.0; u < 1440.0; u += 91.0) {
-            const Eigen::Vector2d source = rectified_to_source_pixel(
+            const auto source = rectified_to_source_pixel(
                 intrinsics, distortion, rectification, u, v);
+            ASSERT_TRUE(source.has_value());
 
             const Eigen::Vector2d normalized{
-                (source.x() - intrinsics.cx) / intrinsics.fx,
-                (source.y() - intrinsics.cy) / intrinsics.fy};
+                (source->x() - intrinsics.cx) / intrinsics.fx,
+                (source->y() - intrinsics.cy) / intrinsics.fy};
             const Eigen::Vector2d undistorted =
                 distortion.undistort_normalized(normalized);
 
@@ -487,12 +497,13 @@ TEST_F(RectifiedToSourcePixelTests, test_baseline_column_is_ignored) {
     Rectification with = shipped_left_rectification();
     with.projection(0, 3) = -284.86842219049794;
 
-    const Eigen::Vector2d a =
+    const auto a =
         rectified_to_source_pixel(intrinsics, distortion, without, 700.0, 500.0);
-    const Eigen::Vector2d b =
+    const auto b =
         rectified_to_source_pixel(intrinsics, distortion, with, 700.0, 500.0);
-    EXPECT_EQ(a.x(), b.x());
-    EXPECT_EQ(a.y(), b.y());
+    ASSERT_TRUE(a.has_value() && b.has_value());
+    EXPECT_EQ(a->x(), b->x());
+    EXPECT_EQ(a->y(), b->y());
 }
 
 TEST_F(RectifiedToSourcePixelTests, test_rejects_singular_projection) {

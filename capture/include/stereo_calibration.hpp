@@ -82,7 +82,9 @@ struct StereoCalibration {
   // What the rectified projections actually imply, for consumers that want
   // depth = fx * baseline / disparity and should not have to know which corner
   // of P holds what. Derived at load; equal to baseline_m on a consistent file.
-  double rectified_fx() const { return camera[0].rectification.fx(); }
+  double rectified_fx() const {
+    return camera[0].rectification.rectified_intrinsics().fx;
+  }
   double rectified_baseline_m() const;
 
   // One line for the startup log: geometry, baseline, rectified focal length.
