@@ -12,16 +12,22 @@ namespace perception::geometry {
 /**
  * @brief Pinhole camera intrinsics.
  *
- * Pixel units, for the *unrectified* image at the size the calibration was
- * solved at. Intrinsics do not scale: a set fitted at one resolution is not a
- * scale factor away from correct at another, it is simply wrong.
+ * Pixel coordinate convention: pixel (i, j) has its *center* at coordinate
+ * (i, j), so the image spans [-0.5, W-0.5] x [-0.5, H-0.5]. This is
+ * OpenCV's convention. Note it differs by half a pixel from the texture-space
+ * convention used by OpenGL and most GPU rasterizers.
+ *
+ * K = [fx, 0.0, cx]
+ *     [0.0, fy, cy]
+ *     [0.0 0.0, 1.0]  
+ *
+ * Non-zero skew is not supported.
  */
 struct CameraIntrinsics {
   double fx{};
   double fy{};
   double cx{};
   double cy{};
-  double skew{0.0};
 
   void validate_focals() const {
     if (fx <= 0.0 || fy <= 0.0) {
@@ -40,7 +46,6 @@ struct CameraIntrinsics {
   Eigen::Matrix3d K() const {
     Eigen::Matrix3d k = Eigen::Matrix3d::Identity();
     k(0, 0) = fx;
-    k(0, 1) = skew;
     k(0, 2) = cx;
     k(1, 1) = fy;
     k(1, 2) = cy;
@@ -57,13 +62,7 @@ struct CameraIntrinsics {
     k_inv(0, 0) = 1.0 / fx;
     k_inv(1, 1) = 1.0 / fy;
     k_inv(1, 2) = -cy / fy;
-
-    if (skew != 0.0) {
-      k_inv(0, 1) = -skew / (fx * fy);
-      k_inv(0, 2) = (skew * cy - cx * fy) / (fx * fy);
-    } else {
-      k_inv(0, 2) = -cx / fx;
-    }
+    k_inv(0, 2) = -cx / fx; // skew = 0
 
     return k_inv;
   }
@@ -93,7 +92,7 @@ struct CameraIntrinsics {
     const double x_norm = x_c / z_c;
     const double y_norm = y_c / z_c;
 
-    const double u = fx * x_norm + skew * y_norm + cx;
+    const double u = fx * x_norm + cx;
     const double v = fy * y_norm + cy;
 
     return {u, v};
@@ -110,8 +109,7 @@ struct CameraIntrinsics {
     const double u = pixel(0);
     const double v = pixel(1);
 
-    const double x =
-        u / fx - v * skew / (fx * fy) + (skew * cy - cx * fy) / (fx * fy);
+    const double x = u / fx - cx / fx;
     const double y = v / fy - cy / fy;
 
     return {x, y, 1.0};
@@ -142,8 +140,16 @@ struct CameraIntrinsics {
    * @return CameraIntrinsics
    */
   static CameraIntrinsics from_row_major(const std::array<double, 9> &k) {
-    return CameraIntrinsics{
-        .fx = k[0], .fy = k[4], .cx = k[2], .cy = k[5], .skew = k[1]};
+    if (k[1] != 0.0) {
+      throw std::runtime_error(std::format(
+          "Non-zero skew ({}) in K. The rectification and disparity paths "
+          "assume zero skew; a sheared K here indicates a pre-warped image "
+          "or a bad calibration.",
+          k[1]));
+    }
+    CameraIntrinsics intr{.fx = k[0], .fy = k[4], .cx = k[2], .cy = k[5]};
+    intr.validate_focals();
+    return intr;
   }
 
   /**
@@ -151,7 +157,8 @@ struct CameraIntrinsics {
    * @return Row-major 3x3 K.
    */
   std::array<double, 9> to_row_major() const {
-    return {fx, skew, cx, 0.0, fy, cy, 0.0, 0.0, 1.0};
+    this->validate_focals();
+    return {fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0};
   }
 };
 
@@ -205,7 +212,7 @@ struct CameraDistortionModel {
    * It does not converge everywhere, and the iterate can grow without bound
    *
    * @param point Distorted point in normalized image coordinates.
-   * @param iterations Fixed-point steps. 
+   * @param iterations Fixed-point steps.
    * @return Undistorted point in normalized image coordinates.
    *
    * @throws std::runtime_error if the iteration has not converged to

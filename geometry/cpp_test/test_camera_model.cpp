@@ -76,23 +76,19 @@ TEST_F(CameraIntrinsicsTests, test_default_initialization) {
     EXPECT_EQ(intrinsics.fy, 0.0);
     EXPECT_EQ(intrinsics.cx, 0.0);
     EXPECT_EQ(intrinsics.cy, 0.0);
-    EXPECT_EQ(intrinsics.skew, 0.0);
 }
 
 TEST_F(CameraIntrinsicsTests, test_k_inverse_is_the_inverse_of_k) {
-    // Without skew, which is what every standard calibration produces.
     const CameraIntrinsics intrinsics = shipped_left_intrinsics();
     const Eigen::Matrix3d product = intrinsics.K() * intrinsics.K_inv();
     EXPECT_TRUE(product.isApprox(Eigen::Matrix3d::Identity(), kEps));
 }
 
-TEST_F(CameraIntrinsicsTests, test_k_inverse_handles_skew) {
-    // The skew branch of K_inv() is separate arithmetic and is never exercised
-    // by this rig's calibration, so it gets its own case.
-    CameraIntrinsics intrinsics = shipped_left_intrinsics();
-    intrinsics.skew = 3.7;
-    const Eigen::Matrix3d product = intrinsics.K() * intrinsics.K_inv();
-    EXPECT_TRUE(product.isApprox(Eigen::Matrix3d::Identity(), kEps));
+TEST_F(CameraIntrinsicsTests, test_k_has_no_skew_term) {
+    // Skew is not modelled: K_inv() is derived assuming K(0, 1) is zero, so
+    // that slot staying empty is what makes the closed-form inverse correct.
+    const CameraIntrinsics intrinsics = shipped_left_intrinsics();
+    EXPECT_DOUBLE_EQ(intrinsics.K()(0, 1), 0.0);
 }
 
 TEST_F(CameraIntrinsicsTests, test_project_backproject_round_trip) {
@@ -105,15 +101,6 @@ TEST_F(CameraIntrinsicsTests, test_project_backproject_round_trip) {
         const Eigen::Vector2d reprojected = intrinsics.project_point(point);
         EXPECT_TRUE(VectorsNear(reprojected, pixel, kEps));
     }
-}
-
-TEST_F(CameraIntrinsicsTests, test_round_trip_survives_skew) {
-    CameraIntrinsics intrinsics = shipped_left_intrinsics();
-    intrinsics.skew = 3.7;
-
-    const Eigen::Vector2d pixel{300.0, 900.0};
-    const Eigen::Vector3d point = intrinsics.backproject_point(pixel, 2.0);
-    EXPECT_TRUE(VectorsNear(intrinsics.project_point(point), pixel, kEps));
 }
 
 TEST_F(CameraIntrinsicsTests, test_backproject_ray_has_unit_z) {
@@ -140,20 +127,29 @@ TEST_F(CameraIntrinsicsTests, test_row_major_round_trip) {
     EXPECT_DOUBLE_EQ(restored.fy, intrinsics.fy);
     EXPECT_DOUBLE_EQ(restored.cx, intrinsics.cx);
     EXPECT_DOUBLE_EQ(restored.cy, intrinsics.cy);
-    EXPECT_DOUBLE_EQ(restored.skew, intrinsics.skew);
+    EXPECT_DOUBLE_EQ(intrinsics.to_row_major()[1], 0.0);
 }
 
 TEST_F(CameraIntrinsicsTests, test_from_row_major_reads_opencv_layout) {
-    // Row-major [fx s cx; 0 fy cy; 0 0 1] -- a transpose here would swap cx
-    // into the skew slot and go unnoticed on a symmetric image.
+    // Row-major [fx s cx; 0 fy cy; 0 0 1] -- a transpose here would read cx
+    // out of the fy slot and go unnoticed on a square image, so every entry
+    // is distinct.
     const CameraIntrinsics intrinsics = CameraIntrinsics::from_row_major(
-        {100.0, 0.5, 320.0, 0.0, 200.0, 240.0, 0.0, 0.0, 1.0});
+        {100.0, 0.0, 320.0, 0.0, 200.0, 240.0, 0.0, 0.0, 1.0});
 
     EXPECT_DOUBLE_EQ(intrinsics.fx, 100.0);
-    EXPECT_DOUBLE_EQ(intrinsics.skew, 0.5);
     EXPECT_DOUBLE_EQ(intrinsics.cx, 320.0);
     EXPECT_DOUBLE_EQ(intrinsics.fy, 200.0);
     EXPECT_DOUBLE_EQ(intrinsics.cy, 240.0);
+}
+
+TEST_F(CameraIntrinsicsTests, test_from_row_major_rejects_skew) {
+    // A sheared K means a pre-warped image or a bad calibration; the
+    // rectification and disparity paths assume it away, so it is refused at
+    // the boundary rather than silently dropped.
+    EXPECT_THROW(CameraIntrinsics::from_row_major(
+                     {100.0, 0.5, 320.0, 0.0, 200.0, 240.0, 0.0, 0.0, 1.0}),
+                 std::runtime_error);
 }
 
 TEST_F(CameraIntrinsicsTests, test_rejects_non_positive_focals) {

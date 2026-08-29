@@ -78,8 +78,7 @@ Eigen::Vector2d rectified_to_source_pixel(
   // exactly whenever skew is 0, which is every calibration produced with the
   // standard flags, and this way one K is applied consistently everywhere in
   // this header rather than in two subtly different ways.
-  return {intrinsics.fx * distorted.x() + intrinsics.skew * distorted.y() +
-              intrinsics.cx,
+  return {intrinsics.fx * distorted.x() + intrinsics.cx,
           intrinsics.fy * distorted.y() + intrinsics.cy};
 }
 
