@@ -1,7 +1,8 @@
 find_package(Eigen3 REQUIRED)
 
 add_library(perception_geometry
-  src/camera_model.cpp)
+  src/camera_model.cpp
+  src/stereo.cpp)
 
 target_include_directories(perception_geometry PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/include")

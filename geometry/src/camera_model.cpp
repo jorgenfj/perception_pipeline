@@ -60,24 +60,4 @@ CameraDistortionModel::undistort_normalized(const Eigen::Vector2d &point,
       x_dist, y_dist, iterations, residual, kUndistortTolerance));
 }
 
-std::optional<Eigen::Vector2d> rectified_to_source_pixel(
-    const CameraIntrinsics &intrinsics, const CameraDistortionModel &distortion,
-    const Rectification &rectification, double u, double v) {
-
-  const Eigen::Vector3d ray =
-      rectification.rectified_intrinsics().backproject_ray({u, v});
-
-  const Eigen::Vector3d camera_ray = rectification.rotation.transpose() * ray;
-
-  if (camera_ray.z() <= 0.0) {
-    return std::nullopt;
-  }
-
-  const Eigen::Vector2d normalized = camera_ray.hnormalized();
-
-  const Eigen::Vector2d distorted = distortion.distort_normalized(normalized);
-
-  return intrinsics.normalized_to_pixel(distorted);
-}
-
 } // namespace perception::geometry
