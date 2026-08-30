@@ -45,8 +45,8 @@ enum class RectifyMapCoords {
 // frame is smeared border rather than image, and the caller wants to know
 // before it feeds that to a matcher. A stereoRectify run at alpha=0 reports a
 // full-frame valid ROI, for which the expected count is 0.
-std::size_t count_out_of_frame(const std::vector<float2>& map, uint32_t width, uint32_t height,
-                               RectifyMapCoords coords);
+std::size_t count_out_of_frame(const std::vector<float2>& map, uint32_t source_width,
+                               uint32_t source_height, RectifyMapCoords coords);
 
 // The map, resident on the device, plus the kernel that applies it.
 //
@@ -54,14 +54,18 @@ std::size_t count_out_of_frame(const std::vector<float2>& map, uint32_t width, u
 // eye at startup: the constructor allocates and does a blocking upload, and is
 // not something to call on the frame path.
 //
-// Takes an already-built map rather than a calibration, which is what keeps
-// this class free of the camera maths. make_rectify_transform() in
+// Takes an already-built map rather than a camera, which is what keeps this
+// class free of the camera maths. make_rectify_transform() in
 // transforms/rectify_map.hpp is the one-line way to go straight from a
-// CameraCalibration to one of these.
+// PinholeCameraModel and its Rectification to one of these.
 class RectifyTransform {
  public:
-  // `map` must be packed row-major, width * height entries, in `coords`.
-  RectifyTransform(const std::vector<float2>& map, uint32_t width, uint32_t height,
+  // `map` must be packed row-major, width * height entries, in `coords`, where
+  // width x height is the *rectified* grid. `source_width` x `source_height` is
+  // the image the map's entries point into, which is only needed to count how
+  // many of them point outside it.
+  RectifyTransform(const std::vector<float2>& map, uint32_t source_width, uint32_t source_height,
+                   uint32_t width, uint32_t height,
                    RectifyMapCoords coords = RectifyMapCoords::Normalized);
   ~RectifyTransform();
 

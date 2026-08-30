@@ -3,6 +3,7 @@
 #include <cmath>
 #include <format>
 #include <stdexcept>
+#include <string>
 
 namespace perception::geometry {
 
@@ -41,21 +42,37 @@ StereoExtrinsics StereoExtrinsics::from_row_major(
 }
 
 void StereoRectification::validate() const {
-  if (eye[0].baseline_term() != 0.0) {
+  if (cameras[0].baseline_term() != 0.0) {
     throw std::runtime_error(std::format(
-        "StereoRectification: eye[0] is the reference eye and must carry no "
+        "StereoRectification: cameras[0] is the reference camera and must carry no "
         "baseline offset, but its P(0,3) is {}; the two cameras are listed in "
         "the wrong order",
-        eye[0].baseline_term()));
+        cameras[0].baseline_term()));
   }
-  if (eye[1].baseline_term() == 0.0) {
+  if (cameras[1].baseline_term() == 0.0) {
     throw std::runtime_error(
-        "StereoRectification: eye[1]'s P(0,3) is zero, so the pair states no "
+        "StereoRectification: cameras[1]'s P(0,3) is zero, so the pair states no "
         "baseline; the two cameras are listed in the wrong order");
   }
 
-  const CameraIntrinsics first = eye[0].rectified_intrinsics();
-  const CameraIntrinsics second = eye[1].rectified_intrinsics();
+  if (size.empty()) {
+    throw std::runtime_error(
+        "StereoRectification: size is unset. P and Q are only meaningful "
+        "against the grid stereoRectify computed them for, and that size "
+        "cannot be recovered from them");
+  }
+
+  const CameraIntrinsics first = cameras[0].rectified_intrinsics();
+  const CameraIntrinsics second = cameras[1].rectified_intrinsics();
+
+  if (!(first.cx >= 0.0 && first.cx < static_cast<double>(size.width) &&
+        first.cy >= 0.0 && first.cy < static_cast<double>(size.height))) {
+    throw std::runtime_error(std::format(
+        "StereoRectification: the rectified principal point ({}, {}) is "
+        "outside the {}x{} grid these projections claim to be for",
+        first.cx, first.cy, size.width, size.height));
+  }
+
   const auto differs = [](double a, double b) {
     return std::abs(a - b) > kIntrinsicsTolerance_px;
   };
@@ -99,11 +116,38 @@ void StereoRectification::validate_against(const StereoExtrinsics &extrinsics,
   }
 }
 
+void StereoCalibration::validate() const {
+  if (size.empty()) {
+    throw std::runtime_error(
+        "StereoCalibration: size is unset. Intrinsics are in pixels, so a "
+        "calibration with no image size cannot be checked against the images "
+        "it is used on");
+  }
+  cameras[0].intrinsics.validate_intrinsics();
+  cameras[1].intrinsics.validate_intrinsics();
+  extrinsics.validate();
+  rectification.validate();
+  rectification.validate_against(extrinsics);
+}
+
+std::string StereoCalibration::summary() const {
+  std::string line = std::format(
+      "calibration: {}x{}, baseline={:.4f}m (rectified {:.4f}m), fx={:.2f}px",
+      size.width, size.height, extrinsics.baseline_m, rectification.baseline_m(),
+      rectification.rectified_fx());
+
+  if (!(rectification.size == size)) {
+    line += std::format(", rectified to {}x{}", rectification.size.width,
+                        rectification.size.height);
+  }
+  return line;
+}
+
 bool rectifying_rotations_agree(const StereoRectification &rectification,
                                 const StereoExtrinsics &extrinsics,
                                 double tolerance) {
-  return (rectification.eye[1].rotation * extrinsics.rotation)
-      .isApprox(rectification.eye[0].rotation, tolerance);
+  return (rectification.cameras[1].rotation * extrinsics.rotation)
+      .isApprox(rectification.cameras[0].rotation, tolerance);
 }
 
 std::optional<Eigen::Vector2d> rectified_to_source_pixel(

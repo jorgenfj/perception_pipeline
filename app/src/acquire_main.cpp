@@ -127,11 +127,11 @@ int main(int argc, char** argv) {
 
     if (config.have_calibration) {
       std::printf("%s\n", config.calibration.summary().c_str());
-      if (config.calibration.width != geometry.width ||
-          config.calibration.height != geometry.height) {
+      if (config.calibration.size.width != geometry.width ||
+          config.calibration.size.height != geometry.height) {
         throw std::runtime_error(
-            "calibration was solved at " + std::to_string(config.calibration.width) + "x" +
-            std::to_string(config.calibration.height) + " but the cameras came up " +
+            "calibration was solved at " + std::to_string(config.calibration.size.width) + "x" +
+            std::to_string(config.calibration.size.height) + " but the cameras came up " +
             std::to_string(geometry.width) + "x" + std::to_string(geometry.height) +
             " -- re-run the calibration at this geometry, or set camera.features' Width/Height "
             "back to what it was calibrated at");

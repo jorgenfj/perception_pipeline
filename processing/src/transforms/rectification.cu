@@ -10,8 +10,6 @@
 namespace perception {
 namespace {
 
-// --- device: applying the map -------------------------------------------------
-
 __global__ void rectify_lookup_rgba8_kernel(cudaTextureObject_t img,
                                             const float2* __restrict__ map,
                                             uint8_t* __restrict__ dst, int dst_stride, int width,
@@ -22,18 +20,6 @@ __global__ void rectify_lookup_rgba8_kernel(cudaTextureObject_t img,
 
   const std::size_t idx = static_cast<std::size_t>(y) * width + x;
 
-  // The whole kernel, and the reason the map exists. Two units, no arithmetic:
-  //
-  // __ldcs -- streaming load. Every map entry is read exactly once per frame by
-  // exactly one thread, so caching it evicts something that will be reused for
-  // something that will not. Consecutive threads read consecutive entries, so a
-  // warp's 32 loads are four 64-byte sectors.
-  //
-  // tex2D -- the TMU does the bilinear weighting and the border handling in
-  // fixed function, off the ALU's critical path, and its own cache is what
-  // absorbs the fact that neighbouring threads sample overlapping source
-  // texels. This is the one access in the frame path that is deliberately not
-  // coalesced: rectification scatters, and the TMU is the unit built for it.
   const float2 m = __ldcs(&map[idx]);              // LSU -- plain global load
   const float4 px = tex2D<float4>(img, m.x, m.y);  // TMU -- filtered fetch
 
@@ -49,8 +35,9 @@ __global__ void rectify_lookup_rgba8_kernel(cudaTextureObject_t img,
 
 }  // namespace
 
-RectifyTransform::RectifyTransform(const std::vector<float2>& host_map, uint32_t width,
-                                   uint32_t height, RectifyMapCoords coords)
+RectifyTransform::RectifyTransform(const std::vector<float2>& host_map, uint32_t source_width,
+                                   uint32_t source_height, uint32_t width, uint32_t height,
+                                   RectifyMapCoords coords)
     : width_(width), height_(height), coords_(coords) {
   if (width == 0 || height == 0) {
     throw std::runtime_error("RectifyTransform: zero-sized geometry");
@@ -61,13 +48,14 @@ RectifyTransform::RectifyTransform(const std::vector<float2>& host_map, uint32_t
                              std::to_string(height) + " needs " +
                              std::to_string(static_cast<std::size_t>(width) * height));
   }
-  out_of_frame_ = count_out_of_frame(host_map, width, height, coords);
+  if (source_width == 0 || source_height == 0) {
+    throw std::runtime_error("RectifyTransform: zero-sized source geometry");
+  }
+  out_of_frame_ = count_out_of_frame(host_map, source_width, source_height, coords);
 
   const std::size_t bytes = host_map.size() * sizeof(float2);
   cuda_error_check(cudaMalloc(&map_, bytes), "RectifyTransform: cudaMalloc map");
 
-  // Blocking, on the default stream, exactly once per eye at construction. The
-  // frame path never touches this.
   const cudaError_t copy = cudaMemcpy(map_, host_map.data(), bytes, cudaMemcpyHostToDevice);
   if (copy != cudaSuccess) {
     cudaFree(map_);

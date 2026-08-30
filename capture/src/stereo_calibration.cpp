@@ -45,22 +45,24 @@ std::array<double, N> read_matrix(const YAML::Node& parent, const char* key,
   return out;
 }
 
-CameraCalibration read_camera(const YAML::Node& node, const std::string& where) {
-  CameraCalibration cal;
-
-  cal.role = require_node(node, "role", where).as<std::string>();
-  if (node["serial"]) cal.serial = node["serial"].as<std::string>();
+geometry::PinholeCameraModel read_camera(const YAML::Node& node, const std::string& where) {
+  geometry::PinholeCameraModel camera;
 
   // The file stays flat and row-major; the geometry types are built from it
   // here so that this is the only place the layout is interpreted.
-  cal.intrinsics = geometry::CameraIntrinsics::from_row_major(
+  // from_row_major() validates K, so a non-positive or non-finite focal is
+  // refused before it can reach anything.
+  camera.intrinsics = geometry::CameraIntrinsics::from_row_major(
       read_matrix<9>(node, "camera_matrix", where));
 
+  // The model name is checked and dropped rather than stored: only plumb_bob
+  // parses, so a field holding it would be an invariant dressed as data.
   const YAML::Node distortion = require_node(node, "distortion", where);
-  if (distortion["model"]) cal.distortion_model = distortion["model"].as<std::string>();
-  if (cal.distortion_model != "plumb_bob") {
+  const std::string model =
+      distortion["model"] ? distortion["model"].as<std::string>() : "plumb_bob";
+  if (model != "plumb_bob") {
     fail(where + ".distortion.model",
-         "'" + cal.distortion_model +
+         "'" + model +
              "' is not supported; this build implements plumb_bob "
              "[k1 k2 p1 p2 k3] only");
   }
@@ -74,106 +76,134 @@ CameraCalibration read_camera(const YAML::Node& node, const std::string& where) 
     raw.push_back(coefficients[i].as<double>());
   }
   try {
-    cal.distortion = geometry::CameraDistortionModel::from_coefficients(raw);
+    camera.distortion = geometry::CameraDistortionModel::from_coefficients(raw);
   } catch (const std::runtime_error& e) {
     fail(where + ".distortion.coefficients", e.what());
   }
 
-  const YAML::Node rect = require_node(node, "rectification", where);
-  cal.rectification = geometry::Rectification::from_row_major(
-      read_matrix<9>(rect, "rotation", where + ".rectification"),
-      read_matrix<12>(rect, "projection", where + ".rectification"));
-
-  if (cal.intrinsics.fx <= 0.0 || cal.intrinsics.fy <= 0.0) {
-    fail(where + ".camera_matrix", "fx and fy must be positive");
-  }
-  return cal;
+  return camera;
 }
 
-}  // namespace
-
-double StereoCalibration::rectified_baseline_m() const {
-  // Sign dropped: the baseline is a distance, and which eye is left is the
-  // roles' business. baseline() owns the -P2(0,3) / fx convention, and throws
-  // on a projection it cannot divide through -- the same stance as the loader
-  // above, where an approximate calibration is worse than none.
-  return std::abs(camera[1].rectification.baseline());
+geometry::ImageSize read_image_size(const YAML::Node& node, const std::string& where) {
+  geometry::ImageSize size;
+  size.width = require_node(node, "width", where).as<uint32_t>();
+  size.height = require_node(node, "height", where).as<uint32_t>();
+  if (size.empty()) fail(where, "must be non-zero");
+  return size;
 }
 
-std::string StereoCalibration::summary() const {
-  char line[256];
-  std::snprintf(line, sizeof(line),
-                "calibration: %ux%u, %s|%s, baseline=%.4fm (rectified %.4fm), fx=%.2fpx",
-                width, height, camera[0].role.c_str(), camera[1].role.c_str(), baseline_m,
-                rectified_baseline_m(), rectified_fx());
-  return line;
-}
-
-StereoCalibration load_stereo_calibration(const std::string& path) {
-  YAML::Node root;
-  try {
-    root = YAML::LoadFile(path);
-  } catch (const YAML::Exception& e) {
-    throw std::runtime_error("calibration: cannot load " + path + ": " + e.what());
-  }
-
-  StereoCalibration cal;
-
-  const YAML::Node size = require_node(root, "image_size", "");
-  cal.width = require_node(size, "width", "image_size").as<uint32_t>();
-  cal.height = require_node(size, "height", "image_size").as<uint32_t>();
-  if (cal.width == 0 || cal.height == 0) fail("image_size", "must be non-zero");
-
+// The `cameras:` sequence, checked for the shape both readers depend on.
+const YAML::Node require_cameras(const YAML::Node& root) {
   const YAML::Node cameras = require_node(root, "cameras", "");
   if (!cameras.IsSequence() || cameras.size() != 2) {
     fail("cameras", "expected exactly two entries, one per stream, in stream order");
   }
-  for (std::size_t s = 0; s < 2; ++s) {
-    cal.camera[s] = read_camera(cameras[s], "cameras[" + std::to_string(s) + "]");
-  }
-  if (cal.camera[0].role == cal.camera[1].role) {
-    fail("cameras", "both entries have role '" + cal.camera[0].role +
+  return cameras;
+}
+
+// Roles are not kept on StereoCalibration -- the index is the eye -- but the
+// file still has to be coherent about them, and this is the layer that reads
+// the file. Two entries claiming the same eye is a copy-paste, not a rig.
+void require_distinct_roles(const YAML::Node& cameras) {
+  const std::string first = require_node(cameras[0], "role", "cameras[0]").as<std::string>();
+  const std::string second = require_node(cameras[1], "role", "cameras[1]").as<std::string>();
+  if (first == second) {
+    fail("cameras", "both entries have role '" + first +
                         "'; the two eyes must be distinguishable");
   }
+}
 
-  const YAML::Node extrinsics = require_node(root, "extrinsics", "");
-  const std::array<double, 9> r = read_matrix<9>(extrinsics, "rotation", "extrinsics");
-  const std::array<double, 3> t = read_matrix<3>(extrinsics, "translation_m", "extrinsics");
-  cal.rotation << r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8];
-  cal.translation_m << t[0], t[1], t[2];
+// The file keeps each eye's R and P under its camera, because that is how
+// stereoRectify hands them back. They are read out into the pair-level type
+// here: this is the one place the file's layout is interpreted, and grouping
+// by eye is the file's business, not the calibration's.
+geometry::Rectification read_rectification(const YAML::Node& node, const std::string& where) {
+  const YAML::Node rect = require_node(node, "rectification", where);
+  try {
+    return geometry::Rectification::from_row_major(
+        read_matrix<9>(rect, "rotation", where + ".rectification"),
+        read_matrix<12>(rect, "projection", where + ".rectification"));
+  } catch (const std::runtime_error& e) {
+    fail(where + ".rectification", e.what());
+  }
+}
 
-  cal.baseline_m = require_node(root, "baseline_m", "").as<double>();
-  if (cal.baseline_m <= 0.0) fail("baseline_m", "must be positive");
+YAML::Node load_document(const std::string& path) {
+  try {
+    return YAML::LoadFile(path);
+  } catch (const YAML::Exception& e) {
+    throw std::runtime_error("calibration: cannot load " + path + ": " + e.what());
+  }
+}
 
-  // The file states the baseline twice -- once as |T| and once spelled out.
-  // Disagreement means someone edited one and not the other, and a wrong
-  // baseline scales every depth in the scene without looking wrong.
-  const double norm = cal.translation_m.norm();
-  if (std::abs(norm - cal.baseline_m) > 1e-4) {
-    char detail[192];
-    std::snprintf(detail, sizeof(detail),
-                  "baseline_m is %.6fm but |extrinsics.translation_m| is %.6fm; they describe "
-                  "the same distance and must agree",
-                  cal.baseline_m, norm);
-    fail("baseline_m", detail);
+}  // namespace
+
+std::array<CalibrationIdentity, 2> read_calibration_identity(const std::string& path) {
+  const YAML::Node cameras = require_cameras(load_document(path));
+  require_distinct_roles(cameras);
+
+  std::array<CalibrationIdentity, 2> identity;
+  for (std::size_t s = 0; s < 2; ++s) {
+    const std::string where = "cameras[" + std::to_string(s) + "]";
+    identity[s].role = require_node(cameras[s], "role", where).as<std::string>();
+    if (cameras[s]["serial"]) identity[s].serial = cameras[s]["serial"].as<std::string>();
+  }
+  return identity;
+}
+
+geometry::StereoCalibration load_stereo_calibration(const std::string& path) {
+  const YAML::Node root = load_document(path);
+
+  geometry::StereoCalibration cal;
+
+  cal.size = read_image_size(require_node(root, "image_size", ""), "image_size");
+
+  const YAML::Node cameras = require_cameras(root);
+  require_distinct_roles(cameras);
+  for (std::size_t s = 0; s < 2; ++s) {
+    const std::string where = "cameras[" + std::to_string(s) + "]";
+    cal.cameras[s] = read_camera(cameras[s], where);
+    cal.rectification.cameras[s] = read_rectification(cameras[s], where);
   }
 
-  const std::array<double, 16> q = read_matrix<16>(
-      require_node(root, "rectification", ""), "disparity_to_depth", "rectification");
-  cal.disparity_to_depth << q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7], q[8], q[9], q[10],
-      q[11], q[12], q[13], q[14], q[15];
+  // The file spells the baseline out on its own, away from the extrinsics
+  // node; StereoExtrinsics takes all three together because checking them
+  // against each other is the only reason to hold them apart.
+  const YAML::Node extrinsics = require_node(root, "extrinsics", "");
+  try {
+    cal.extrinsics = geometry::StereoExtrinsics::from_row_major(
+        read_matrix<9>(extrinsics, "rotation", "extrinsics"),
+        read_matrix<3>(extrinsics, "translation_m", "extrinsics"),
+        require_node(root, "baseline_m", "").as<double>());
+  } catch (const std::runtime_error& e) {
+    fail("baseline_m", e.what());
+  }
 
-  // Same check against the rectified projections, which is where depth is
-  // actually computed from -- a Q or a P that was not regenerated alongside the
-  // extrinsics is the failure this catches.
-  const double rectified = cal.rectified_baseline_m();
-  if (rectified > 0.0 && std::abs(rectified - cal.baseline_m) > 1e-3) {
-    char detail[224];
-    std::snprintf(detail, sizeof(detail),
-                  "the rectified projections imply a %.6fm baseline but baseline_m is %.6fm; "
-                  "rectification and extrinsics came from different calibration runs",
-                  rectified, cal.baseline_m);
-    fail("rectification", detail);
+  const YAML::Node rectification = require_node(root, "rectification", "");
+
+  // stereoRectify's newImageSize. Absent means it was left at the default,
+  // which is the size the cameras were calibrated at -- the only case any
+  // calibration in this tree has needed so far, and the reason the key is
+  // optional rather than required.
+  cal.rectification.size =
+      rectification["image_size"]
+          ? read_image_size(rectification["image_size"], "rectification.image_size")
+          : cal.size;
+
+  const std::array<double, 16> q =
+      read_matrix<16>(rectification, "disparity_to_depth", "rectification");
+  cal.rectification.disparity_to_depth << q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7], q[8],
+      q[9], q[10], q[11], q[12], q[13], q[14], q[15];
+
+  // Both statements the geometry types own: that the pair is internally one
+  // stereoRectify run, and that it is the run belonging to these extrinsics. A
+  // Q or a P left behind when the extrinsics were regenerated is what the
+  // second catches.
+  try {
+    cal.rectification.validate();
+    cal.rectification.validate_against(cal.extrinsics);
+  } catch (const std::exception& e) {
+    fail("rectification", e.what());
   }
 
   return cal;

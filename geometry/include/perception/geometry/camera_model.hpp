@@ -3,12 +3,26 @@
 
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <eigen3/Eigen/Dense>
 #include <format>
 #include <stdexcept>
 #include <vector>
 
 namespace perception::geometry {
+
+/**
+ * @brief The pixel extent of an image.
+ */
+struct ImageSize {
+  uint32_t width{0};
+  uint32_t height{0};
+
+  /** True if either extent is zero, i.e. the size was never set. */
+  bool empty() const { return width == 0 || height == 0; }
+
+  bool operator==(const ImageSize &) const = default;
+};
 
 /**
  * @brief Pinhole camera intrinsics.

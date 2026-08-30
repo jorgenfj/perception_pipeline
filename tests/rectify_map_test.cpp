@@ -3,7 +3,7 @@
 // perception_processing, which only exists in a CUDA build.
 //
 // The properties checked here are the ones that go wrong silently: an identity
-// calibration that is not identity, a transpose in the rotation, a missing half
+// camera that is not identity, a transpose in the rotation, a missing half
 // pixel, distortion applied in the wrong direction. All of them still produce a
 // plausible-looking image.
 #include "transforms/rectify_map.hpp"
@@ -11,8 +11,6 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
-
-#include "stereo_calibration.hpp"
 
 namespace {
 
@@ -24,22 +22,36 @@ void check(bool ok, const std::string& what) {
 }
 
 using perception::build_rectify_map;
-using perception::CameraCalibration;
 using perception::count_out_of_frame;
 using perception::RectifyMapCoords;
 using perception::geometry::CameraDistortionModel;
 using perception::geometry::CameraIntrinsics;
+using perception::geometry::ImageSize;
+using perception::geometry::PinholeCameraModel;
 using perception::geometry::Rectification;
 
 constexpr uint32_t kWidth = 1440;
 constexpr uint32_t kHeight = 1080;
 
+// Source and rectified are the same grid here, which is the case the shipped
+// calibration is. They are still passed separately: build_rectify_map divides
+// Normalized entries by the source extent and sizes the table by the rectified
+// one, and conflating them is exactly what these tests would not catch.
+constexpr ImageSize kSize{kWidth, kHeight};
+
 // The shipped left camera, copied from app/config/stereo_calibration.yaml. Not
 // loaded from the file: this test is about the map, and a schema change should
 // break the loader's test, not this one.
-CameraCalibration shipped_left() {
-  CameraCalibration cal;
-  cal.role = "left";
+// The eye and its half of the rectification, which no longer travel in one
+// struct: the camera is mono calibration, the rectification belongs to the pair.
+struct Eye {
+  PinholeCameraModel camera;
+  Rectification rectification;
+};
+
+Eye shipped_left() {
+  Eye eye;
+  PinholeCameraModel& cal = eye.camera;
   cal.intrinsics = CameraIntrinsics::from_row_major(
       {2329.7529233353694, 0.0, 754.5022389652534,
        0.0, 2329.5740433167261, 560.6093817146035,
@@ -47,27 +59,27 @@ CameraCalibration shipped_left() {
   cal.distortion = CameraDistortionModel::from_coefficients(
       {-0.24410080138920398, 0.26696399429948375, 8.827990083798891e-05,
        2.4006501080748617e-05, -0.15345901438237441});
-  cal.rectification = Rectification::from_row_major(
+  eye.rectification = Rectification::from_row_major(
       {0.9953566462359332, 0.09624063867688702, 0.001698899944114407,
        -0.09624479980195409, 0.9953543863342791, 0.0025659532716845275,
        -0.0014440585296353384, -0.0027175489279068757, 0.9999952648001825},
       {2619.5697059803665, 0.0, 745.2493591308594, 0.0,
        0.0, 2619.5697059803665, 558.5332374572754, 0.0,
        0.0, 0.0, 1.0, 0.0});
-  return cal;
+  return eye;
 }
 
 // Same geometry, but nothing to undo: K == P, R == I, no distortion.
-CameraCalibration identity_camera() {
-  CameraCalibration cal;
-  cal.role = "left";
+Eye identity_camera() {
+  Eye eye;
+  PinholeCameraModel& cal = eye.camera;
   cal.intrinsics = CameraIntrinsics::from_row_major(
       {1050.0, 0.0, 720.0, 0.0, 1050.0, 540.0, 0.0, 0.0, 1.0});
   cal.distortion = CameraDistortionModel{};
-  cal.rectification = Rectification::from_row_major(
+  eye.rectification = Rectification::from_row_major(
       {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0},
       {1050.0, 0.0, 720.0, 0.0, 0.0, 1050.0, 540.0, 0.0, 0.0, 0.0, 1.0, 0.0});
-  return cal;
+  return eye;
 }
 
 const float2& at(const std::vector<float2>& map, uint32_t x, uint32_t y) {
@@ -75,8 +87,9 @@ const float2& at(const std::vector<float2>& map, uint32_t x, uint32_t y) {
 }
 
 void test_identity_is_identity() {
+  const Eye eye = identity_camera();
   const std::vector<float2> map =
-      build_rectify_map(identity_camera(), kWidth, kHeight, RectifyMapCoords::Pixels);
+      build_rectify_map(eye.camera, kSize, eye.rectification, kSize, RectifyMapCoords::Pixels);
 
   check(map.size() == static_cast<std::size_t>(kWidth) * kHeight, "identity: one entry per pixel");
 
@@ -98,11 +111,11 @@ void test_identity_is_identity() {
 }
 
 void test_normalized_matches_pixels() {
-  const CameraCalibration cal = shipped_left();
+  const Eye cal = shipped_left();
   const std::vector<float2> pixels =
-      build_rectify_map(cal, kWidth, kHeight, RectifyMapCoords::Pixels);
+      build_rectify_map(cal.camera, kSize, cal.rectification, kSize, RectifyMapCoords::Pixels);
   const std::vector<float2> normalized =
-      build_rectify_map(cal, kWidth, kHeight, RectifyMapCoords::Normalized);
+      build_rectify_map(cal.camera, kSize, cal.rectification, kSize, RectifyMapCoords::Normalized);
 
   double worst = 0.0;
   for (std::size_t i = 0; i < pixels.size(); ++i) {
@@ -118,14 +131,16 @@ void test_normalized_matches_pixels() {
 // where we started. This is the round trip that a transposed rotation or a
 // distortion sign error breaks.
 void test_round_trip_through_calibration() {
-  const CameraCalibration cal = shipped_left();
-  const std::vector<float2> map = build_rectify_map(cal, kWidth, kHeight, RectifyMapCoords::Pixels);
+  const Eye cal = shipped_left();
+  const std::vector<float2> map =
+      build_rectify_map(cal.camera, kSize, cal.rectification, kSize, RectifyMapCoords::Pixels);
 
-  const auto& K = cal.intrinsics;
+  const auto& K = cal.camera.intrinsics;
   const auto& R = cal.rectification.rotation;
   const auto& P = cal.rectification.projection;
-  const double k1 = cal.distortion.k1, k2 = cal.distortion.k2;
-  const double p1 = cal.distortion.p1, p2 = cal.distortion.p2, k3 = cal.distortion.k3;
+  const double k1 = cal.camera.distortion.k1, k2 = cal.camera.distortion.k2;
+  const double p1 = cal.camera.distortion.p1, p2 = cal.camera.distortion.p2,
+               k3 = cal.camera.distortion.k3;
 
   double worst = 0.0;
   for (uint32_t y = 40; y < kHeight; y += 97) {
@@ -169,14 +184,13 @@ void test_round_trip_through_calibration() {
 // If this ever fires, the map is fine and the calibration changed.
 void test_shipped_maps_stay_in_frame() {
   for (const char* role : {"left", "right"}) {
-    CameraCalibration cal = shipped_left();
+    Eye cal = shipped_left();
     if (std::string(role) == "right") {
-      cal.role = "right";
-      cal.intrinsics = CameraIntrinsics::from_row_major(
+      cal.camera.intrinsics = CameraIntrinsics::from_row_major(
           {2325.7999086770888, 0.0, 735.2969373843101,
            0.0, 2325.69699359287, 559.0702576161585,
            0.0, 0.0, 1.0});
-      cal.distortion = CameraDistortionModel::from_coefficients(
+      cal.camera.distortion = CameraDistortionModel::from_coefficients(
           {-0.23956893837514504, 0.21113576451839627, 3.624182815897604e-05,
            -1.877730621643997e-05, 0.09839628999662872});
       cal.rectification = Rectification::from_row_major(
@@ -188,7 +202,7 @@ void test_shipped_maps_stay_in_frame() {
            0.0, 0.0, 1.0, 0.0});
     }
     const std::vector<float2> map =
-        build_rectify_map(cal, kWidth, kHeight, RectifyMapCoords::Pixels);
+        build_rectify_map(cal.camera, kSize, cal.rectification, kSize, RectifyMapCoords::Pixels);
     const std::size_t outside = count_out_of_frame(map, kWidth, kHeight, RectifyMapCoords::Pixels);
     check(outside == 0, std::string("shipped ") + role + ": " + std::to_string(outside) +
                             " entries outside the frame, expected 0");
@@ -198,11 +212,12 @@ void test_shipped_maps_stay_in_frame() {
 // P2[3] is the other eye's baseline offset. It must not move this eye's map --
 // if it does, every rectified frame is shifted by a baseline's worth of pixels.
 void test_baseline_column_is_ignored() {
-  CameraCalibration cal = shipped_left();
+  Eye cal = shipped_left();
   const std::vector<float2> without =
-      build_rectify_map(cal, kWidth, kHeight, RectifyMapCoords::Pixels);
+      build_rectify_map(cal.camera, kSize, cal.rectification, kSize, RectifyMapCoords::Pixels);
   cal.rectification.projection(0, 3) = -284.86842219049794;
-  const std::vector<float2> with = build_rectify_map(cal, kWidth, kHeight, RectifyMapCoords::Pixels);
+  const std::vector<float2> with =
+      build_rectify_map(cal.camera, kSize, cal.rectification, kSize, RectifyMapCoords::Pixels);
 
   double worst = 0.0;
   for (std::size_t i = 0; i < with.size(); ++i) {
@@ -221,7 +236,9 @@ void test_baseline_column_is_ignored() {
 void test_rejects_bad_input() {
   bool threw = false;
   try {
-    build_rectify_map(identity_camera(), 0, kHeight, RectifyMapCoords::Pixels);
+    const Eye eye = identity_camera();
+    build_rectify_map(eye.camera, kSize, eye.rectification, ImageSize{0, kHeight},
+                      RectifyMapCoords::Pixels);
   } catch (const std::exception&) {
     threw = true;
   }
@@ -232,9 +249,9 @@ void test_rejects_bad_input() {
   // an fx of 0 would otherwise fill every entry with the principal point.
   threw = false;
   try {
-    CameraCalibration cal = identity_camera();
-    cal.intrinsics.fx = 0.0;
-    build_rectify_map(cal, kWidth, kHeight, RectifyMapCoords::Pixels);
+    Eye cal = identity_camera();
+    cal.camera.intrinsics.fx = 0.0;
+    build_rectify_map(cal.camera, kSize, cal.rectification, kSize, RectifyMapCoords::Pixels);
   } catch (const std::exception&) {
     threw = true;
   }
@@ -251,9 +268,9 @@ void test_rejects_bad_input() {
 
   threw = false;
   try {
-    CameraCalibration cal = identity_camera();
+    Eye cal = identity_camera();
     cal.rectification.projection.setZero();
-    build_rectify_map(cal, kWidth, kHeight, RectifyMapCoords::Pixels);
+    build_rectify_map(cal.camera, kSize, cal.rectification, kSize, RectifyMapCoords::Pixels);
   } catch (const std::exception&) {
     threw = true;
   }

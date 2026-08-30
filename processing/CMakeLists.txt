@@ -12,7 +12,4 @@ add_library(perception_processing
 
 target_include_directories(perception_processing PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
-# perception_capture is header-only and CUDA-free -- it is where the rig's
-# calibration lives, and the rectification map is built straight from it. It
-# carries perception_geometry, which is where the camera maths lives.
-target_link_libraries(perception_processing PUBLIC perception_core perception_capture)
+target_link_libraries(perception_processing PUBLIC perception_core perception_geometry)

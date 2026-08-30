@@ -3,7 +3,9 @@
 
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <optional>
+#include <string>
 
 #include <eigen3/Eigen/Dense>
 
@@ -12,7 +14,7 @@
 namespace perception::geometry {
 
 /**
- * @brief One eye's half of a stereo rectification
+ * @brief One camera's half of a stereo rectification
  *
  */
 struct Rectification {
@@ -128,21 +130,26 @@ struct StereoExtrinsics {
  * @brief Both halves of one cv::stereoRectify run, and the Q that goes with
  *        them.
  *
- * Indexed to match the cameras it rectifies, so eye[0] is the reference eye,
+ * Indexed to match the cameras it rectifies, so cameras[0] is the reference camera,
  * the one stereoRectify leaves at the origin of the rectified frame, and the
  * one that therefore carries no baseline offset in its projection.
  */
 struct StereoRectification {
-  Rectification eye[2];
+  Rectification cameras[2];
 
   /** Q: [X Y Z W]^T = Q * [u v disparity 1]^T. */
   Eigen::Matrix4d disparity_to_depth{Eigen::Matrix4d::Zero()};
 
   /**
-   * @brief The rectified intrinsics both eyes share.
+   * @brief The rectified image size these projections were computed for
+   */
+  ImageSize size;
+
+  /**
+   * @brief The rectified intrinsics both cameras share.
    */
   CameraIntrinsics rectified_intrinsics() const {
-    return eye[0].rectified_intrinsics();
+    return cameras[0].rectified_intrinsics();
   }
 
   /**
@@ -155,18 +162,19 @@ struct StereoRectification {
   /**
    * @brief The baseline the rectified projections imply, in metres.
    *
-   * The whole baseline lives in eye[1]: P2(0,3) is -fx * Tx and the reference
-   * eye carries no offset.
+   * The whole baseline lives in cameras[1]: P2(0,3) is -fx * Tx and the reference
+   * camera carries no offset.
    *
    * @return |-P2(0,3) / P2(0,0)|.
    */
-  double baseline_m() const { return std::abs(eye[1].baseline()); }
+  double baseline_m() const { return std::abs(cameras[1].baseline()); }
 
-  /** How far the two eyes' shared intrinsics may sit apart, in pixels. */
+  /** How far the two cameras' shared intrinsics may sit apart, in pixels. */
   static constexpr double kIntrinsicsTolerance_px = 1e-6;
 
   /**
-   * @brief Check that the two halves belong together
+   * @brief Check that the two halves belong together, and that `size` was set
+   * and holds the rectified principal point.
    *
    * @throws std::runtime_error naming what disagrees.
    */
@@ -185,7 +193,7 @@ struct StereoRectification {
 };
 
 /**
- * @brief Whether both eyes' rectifying rotations land in the same rectified
+ * @brief Whether both cameras' rectifying rotations land in the same rectified
  *        orientation.
  *
  * @param rectification The pair's R1 and R2.
@@ -198,6 +206,36 @@ bool rectifying_rotations_agree(const StereoRectification &rectification,
                                 double tolerance = 1e-9);
 
 /**
+ * @brief A calibrated stereo pair: two cameras, the transform between them,
+ *        and the rectification derived from both.
+ */
+struct StereoCalibration {
+  /**
+   * @brief The size of the source images the two cameras were calibrated at.
+   */
+  ImageSize size;
+
+  /** The two unrectified cameras. cameras[0] is the reference camera. */
+  PinholeCameraModel cameras[2];
+
+  StereoExtrinsics extrinsics;
+  StereoRectification rectification;
+
+  /**
+   * @brief Every member's own checks, plus the ones that span them.
+   *
+   * For a calibration assembled in memory. A loader may prefer the members'
+   * validate() as it fills them, so a rejection can name the key it came from.
+   *
+   * @throws std::runtime_error naming what is wrong.
+   */
+  void validate() const;
+
+  /** One line for a startup log. */
+  std::string summary() const;
+};
+
+/**
  * @brief For one pixel of the rectified output, get the pixel in the
  * *source* image that it samples.
  *
@@ -207,8 +245,8 @@ bool rectifying_rotations_agree(const StereoRectification &rectification,
  * camera's own K.
  *
  * Note that P(0,3) plays no part. The fourth column of P translates the
- * rectified camera along its own x axis, which moves where the *other* eye
- * sees a point, not where this eye samples.
+ * rectified camera along its own x axis, which moves where the *other* camera
+ * sees a point, not where this camera samples.
  *
  * @param intrinsics This camera's unrectified K.
  * @param distortion This camera's lens distortion.

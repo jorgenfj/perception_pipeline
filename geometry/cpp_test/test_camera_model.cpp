@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <perception/geometry/camera_model.hpp>
+#include <perception/geometry/stereo.hpp>
 
 #include <cmath>
 #include <cstdio>

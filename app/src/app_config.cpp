@@ -4,6 +4,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <array>
 #include <filesystem>
 #include <stdexcept>
 #include <unordered_map>
@@ -202,13 +203,16 @@ AppConfig load_app_config(const std::string& path) {
                std::to_string(config.pipeline.max_consumers));
     }
     if (!config.stereo.calibration_path.empty()) {
-      config.calibration = load_stereo_calibration(
+      const std::string calibration_path =
           resolve_config_path(config.stereo.calibration_path,
-                              std::filesystem::path(path).parent_path().string()));
+                              std::filesystem::path(path).parent_path().string());
+      config.calibration = load_stereo_calibration(calibration_path);
       config.have_calibration = true;
 
+      const std::array<CalibrationIdentity, 2> identity =
+          read_calibration_identity(calibration_path);
       for (std::size_t s = 0; s < 2; ++s) {
-        const CameraCalibration& cal = config.calibration.camera[s];
+        const CalibrationIdentity& cal = identity[s];
         if (cal.role != config.streams[s].role) {
           fail("stereo.calibration",
                "cameras[" + std::to_string(s) + "] is role '" + cal.role +
