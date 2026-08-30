@@ -315,15 +315,71 @@ struct CameraDistortionModel {
 };
 
 /**
+ * @brief Pinhole Camera Model
+ */
+struct PinholeCameraModel {
+  CameraIntrinsics intrinsics{};
+  CameraDistortionModel distortion{};
+
+  /**
+   * @brief Project a 3D point expressed in the camera coordinate frame onto
+   *        the image sensor, producing a pixel in the distorted (raw) image.
+   *
+   * The full forward model of a pinhole camera:
+   *  1) perspective division (Eq. 2.50 in Szeliski),
+   *  2) the Brown-Conrady forward distortion,
+   *  3) normalized image coordinates to pixels through K (Eq. 2.54).
+   *
+   * @param point 3D point in camera coordinates (Xc, Yc, Zc), with Zc > 0.
+   * @return 2D pixel coordinates (u, v) in the distorted image.
+   *
+   * @throws std::runtime_error if Zc <= 0.
+   */
+  Eigen::Vector2d project_point(const Eigen::Vector3d &point) const {
+    if (point.z() <= 0.0) {
+      throw std::runtime_error(
+          "Projection of point failed. Can't project with z <= 0.");
+    }
+    return intrinsics.normalized_to_pixel(
+        distortion.distort_normalized(point.hnormalized()));
+  }
+
+  /**
+   * @brief Backproject a pixel of the distorted (raw) image to produce a ray
+   * through it in the camera frame. The ray crosses z = 1.0 and is not
+   * normalized.
+   *
+   * The inverse operation of project_point() defined up to scale
+   * (returns direction vector).
+   *
+   * 1) Convert pixel to normalized image coordinates,
+   * 2) Apply iterative undistortion (not guaranteed to converge),
+   * 3) Convert to homogenous form by appending 1.0 as Z value.
+   *
+   * @param pixel Eigen::Vector2d representing distorted camera pixel
+   * coordinates.
+   * @return ray in camera space (x, y, 1.0).
+   *
+   * @throws std::runtime_error if the undistortion does not converge; see
+   *         CameraDistortionModel::undistort_normalized().
+   */
+  Eigen::Vector3d backproject_pixel(const Eigen::Vector2d &pixel) const {
+    return distortion
+        .undistort_normalized(intrinsics.pixel_to_normalized(pixel))
+        .homogeneous();
+  }
+};
+
+/**
  * @brief One eye's half of a stereo rectification
  *
  */
 struct Rectification {
-  /** R1 or R2: rotation taking this camera into the rectified frame. 
+  /** R1 or R2: rotation taking this camera into the rectified frame.
    */
   Eigen::Matrix3d rotation{Eigen::Matrix3d::Identity()};
 
-  /** P1 or P2: the rectified projection, 3x4. 
+  /** P1 or P2: the rectified projection, 3x4.
    *
    * The upper-left 3x3 block of the projection matrix
    * contains the common rectified intrinsic matrix.
@@ -354,14 +410,12 @@ struct Rectification {
   /**
    * @brief The stereo baseline this projection implies, in metres.
    *
-   * P(0,3) is -fx * Tx and P(0,0) is fx, so the baseline is -P(0,3) / P(0,0). Positive for the
-   * second camera of a left-right pair, and 0 for the first, which carries no
-   * offset.
+   * P(0,3) is -fx * Tx and P(0,0) is fx, so the baseline is -P(0,3) / P(0,0).
+   * Positive for the second camera of a left-right pair, and 0 for the first,
+   * which carries no offset.
    *
    */
-  double baseline() const {
-    return -projection(0, 3) / projection(0, 0);
-  }
+  double baseline() const { return -projection(0, 3) / projection(0, 0); }
 
   /**
    * @brief Build from the row-major arrays the calibration YAML stores.
