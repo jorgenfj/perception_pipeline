@@ -116,11 +116,21 @@ bool GlViewer::should_close() const {
 }
 
 void GlViewer::present(const void* src, cudaStream_t stream, double latency_ms) {
-  present_gpu_boxes(src, stream, latency_ms, nullptr);
+  present_impl(src, stream, latency_ms, nullptr);
 }
 
 void GlViewer::present_gpu_boxes(const void* src, cudaStream_t stream, double latency_ms,
                                  const std::function<void(cudaSurfaceObject_t)>& draw_boxes) {
+  present_impl(src, stream, latency_ms, draw_boxes);
+}
+
+void GlViewer::present_gpu(cudaStream_t stream, double latency_ms,
+                           const std::function<void(cudaSurfaceObject_t)>& fill) {
+  present_impl(nullptr, stream, latency_ms, fill);
+}
+
+void GlViewer::present_impl(const void* src, cudaStream_t stream, double latency_ms,
+                            const std::function<void(cudaSurfaceObject_t)>& fill) {
   const uint64_t started = LatencyProbe::host_now_ns();
 
   cudaArray_t array = nullptr;
@@ -129,22 +139,26 @@ void GlViewer::present_gpu_boxes(const void* src, cudaStream_t stream, double la
   cuda_error_check(cudaGraphicsSubResourceGetMappedArray(&array, resource_, 0, 0),
                    "GlViewer: cudaGraphicsSubResourceGetMappedArray");
 
-  cuda_error_check(cudaMemcpy2DToArrayAsync(array, 0, 0, src, image_.stride_bytes,
-                                            static_cast<size_t>(image_.width) * 4, image_.height,
-                                            cudaMemcpyDeviceToDevice, stream),
-                   "GlViewer: cudaMemcpy2DToArrayAsync");
+  // Null src means `fill` produces the whole picture; the texture was
+  // registered WriteDiscard, so there is nothing to preserve underneath it.
+  if (src) {
+    cuda_error_check(cudaMemcpy2DToArrayAsync(array, 0, 0, src, image_.stride_bytes,
+                                              static_cast<size_t>(image_.width) * 4, image_.height,
+                                              cudaMemcpyDeviceToDevice, stream),
+                     "GlViewer: cudaMemcpy2DToArrayAsync");
+  }
 
-  if (draw_boxes) {
+  if (fill) {
     // Bound to the same array the frame copy above just wrote, so whatever
-    // draw_boxes enqueues here lands on top of this frame specifically --
-    // not a stale one -- because it is stream-ordered after that copy.
+    // `fill` enqueues here lands on top of this frame specifically -- not a
+    // stale one -- because it is stream-ordered after that copy.
     cudaResourceDesc res_desc{};
     res_desc.resType = cudaResourceTypeArray;
     res_desc.res.array.array = array;
     cudaSurfaceObject_t surface = 0;
     cuda_error_check(cudaCreateSurfaceObject(&surface, &res_desc),
                      "GlViewer: cudaCreateSurfaceObject");
-    draw_boxes(surface);
+    fill(surface);
     // Safe to destroy right away even though the kernel it was passed to is
     // still queued: the object is a lightweight binding resolved at launch,
     // not something the in-flight kernel dereferences later, and the array
@@ -153,8 +167,8 @@ void GlViewer::present_gpu_boxes(const void* src, cudaStream_t stream, double la
     cuda_error_check(cudaDestroySurfaceObject(surface), "GlViewer: cudaDestroySurfaceObject");
   }
 
-  // Unmapping on the same stream is what orders the copy (and any box
-  // drawing above) ahead of GL's read of the texture. Without the stream
+  // Unmapping on the same stream is what orders the copy (and any drawing
+  // above) ahead of GL's read of the texture. Without the stream
   // argument that guarantee is against the default stream instead, and the
   // quad below can sample a half-written frame.
   cuda_error_check(cudaGraphicsUnmapResources(1, &resource_, stream),

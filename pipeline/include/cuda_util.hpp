@@ -5,6 +5,11 @@
 #include <stdexcept>
 #include <string>
 
+#if defined(__CLANGD_CUDA_SHIM__)
+template <typename T>
+__device__ T __ldcs(const T* ptr);
+#endif
+
 namespace perception {
 
 inline void cuda_error_check(cudaError_t err, const char* what) {

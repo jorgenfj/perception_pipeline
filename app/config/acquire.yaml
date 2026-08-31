@@ -165,6 +165,9 @@ pipeline:
 #               frame they were computed from (YoloViewerConsumer)
 #   headless -- the same detector with no window (HeadlessYoloConsumer),
 #               e.g. for a box with no monitor attached
+#   ess      -- the ESS disparity window (EssViewerConsumer). Takes no ring
+#               consumer of its own: it drives the stereo pairing, so it needs
+#               stereo.enabled, a calibration, and ess.enabled below
 viewer: yolo
 
 #
@@ -194,6 +197,49 @@ yolo:
   model_width: 640
   model_height: 640
   conf_threshold: 0.25
+
+# ESS stereo disparity. Needs stereo.enabled and a stereo.calibration: the
+# network is handed a rectified pair, and rectification comes from the
+# calibration.
+#
+# Where it runs depends on `viewer:` above. With `viewer: ess` the disparity
+# window owns the engine and drives the pairing; otherwise the engine runs from
+# the stereo pair callback in acquire_main.cpp and only logs.
+ess:
+  enabled: false
+
+  # Relative to the executable, like yolo.engine_path.
+  engine_path: "models/ess_full_fp16.engine"
+
+  # The engine's own preprocessing constants, not a tuning knob. Getting them
+  # wrong does not fail -- it quietly degrades every disparity. The defaults are
+  # the ImageNet statistics Isaac ROS's ESS uses; check them against whatever
+  # you exported.
+  normalization:
+    mean: [0.485, 0.456, 0.406]
+    stddev: [0.229, 0.224, 0.225]
+    # What a pixel whose ray leaves the source image gets, in [0, 1] before
+    # normalization. The channel mean normalizes to zero, which is the most
+    # neutral thing a convolution can be handed.
+    no_source_value: 0.449
+
+  # Below this the network says the disparity at that pixel is not to be
+  # believed: drawn black by the viewer, flagged in the log line. 0 trusts
+  # everything.
+  conf_threshold: 0.0
+
+  # --- viewer: ess ------------------------------------------------------------
+  # turbo (default) or jet. Both run dark blue far -> red near, the way Isaac
+  # ROS's ESS samples read; turbo is the same shape without jet's banding.
+  colormap: turbo
+
+  # The colormap's ends, in disparity pixels of the 960x576 grid. Not a
+  # constraint on the network -- values outside clamp. Read it as depth:
+  # depth = rectified_fx * baseline / disparity, and `acquire` prints the two
+  # depths this range works out to at startup. Raise the max to spread the
+  # colors over a nearer scene, lower it for a far one.
+  display_min_disparity: 0.0
+  display_max_disparity: 64.0
 
 # PTP-synchronized capture via GigE Vision Action Commands.
 #

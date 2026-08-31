@@ -5,8 +5,7 @@
 
 add_library(perception_processing
   src/transforms/debayer.cu
-  src/transforms/rectification.cu
-  src/transforms/rectify_map.cpp
+  src/transforms/ess_preprocess.cu
   src/transforms/yolo_preprocess.cu
   )
 

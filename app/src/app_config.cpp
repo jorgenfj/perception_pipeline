@@ -51,11 +51,29 @@ WritePolicy readWritePolicy(const std::string& value, const std::string& where) 
   fail(where, "expected RoundRobin or ScanForFree, got '" + value + "'");
 }
 
+DisparityColormap readColormap(const std::string& value, const std::string& where) {
+  if (value == "turbo") return DisparityColormap::Turbo;
+  if (value == "jet") return DisparityColormap::Jet;
+  fail(where, "expected turbo or jet, got '" + value + "'");
+}
+
+void readChannels(const YAML::Node& parent, const char* key, const std::string& where,
+                  float (&out)[3]) {
+  if (!parent[key]) return;
+  const std::string at = where + "." + key;
+  const auto values = require<std::vector<float>>(parent[key], at);
+  if (values.size() != 3) {
+    fail(at, "expected three values, one per channel, got " + std::to_string(values.size()));
+  }
+  for (int c = 0; c < 3; ++c) out[c] = values[c];
+}
+
 ViewerMode readViewerMode(const std::string& value, const std::string& where) {
   if (value == "camera") return ViewerMode::Camera;
   if (value == "yolo") return ViewerMode::Yolo;
   if (value == "headless") return ViewerMode::Headless;
-  fail(where, "expected camera, yolo, or headless, got '" + value + "'");
+  if (value == "ess") return ViewerMode::Ess;
+  fail(where, "expected camera, yolo, headless, or ess, got '" + value + "'");
 }
 
 std::filesystem::path exe_dir() {
@@ -74,6 +92,8 @@ const char* to_string(ViewerMode mode) {
       return "yolo";
     case ViewerMode::Headless:
       return "headless";
+    case ViewerMode::Ess:
+      return "ess";
   }
   return "?";
 }
@@ -129,6 +149,23 @@ AppConfig load_app_config(const std::string& path) {
     read(yolo, "model_width", "yolo", config.yolo.model_width);
     read(yolo, "model_height", "yolo", config.yolo.model_height);
     read(yolo, "conf_threshold", "yolo", config.yolo.conf_threshold);
+  }
+
+  if (const YAML::Node ess = root["ess"]) {
+    read(ess, "enabled", "ess", config.ess.enabled);
+    read(ess, "engine_path", "ess", config.ess.engine_path);
+    read(ess, "conf_threshold", "ess", config.ess.conf_threshold);
+    read(ess, "display_min_disparity", "ess", config.ess.display_min_disparity);
+    read(ess, "display_max_disparity", "ess", config.ess.display_max_disparity);
+    if (ess["colormap"]) {
+      config.ess.colormap = readColormap(scalar(ess["colormap"], "ess.colormap"), "ess.colormap");
+    }
+    if (const YAML::Node normalization = ess["normalization"]) {
+      readChannels(normalization, "mean", "ess.normalization", config.ess.normalization.mean);
+      readChannels(normalization, "stddev", "ess.normalization", config.ess.normalization.stddev);
+      read(normalization, "no_source_value", "ess.normalization",
+           config.ess.normalization.no_source_value);
+    }
   }
 
   // Only consulted by a -DPERCEPTION_SOURCE=recording build, but always parsed:
@@ -227,6 +264,24 @@ AppConfig load_app_config(const std::string& path) {
         }
       }
     }
+  }
+
+  if (config.ess.enabled) {
+    if (!config.stereo.enabled) {
+      fail("ess.enabled", "needs stereo.enabled -- disparity comes from a pair, not one stream");
+    }
+    if (!config.have_calibration) {
+      fail("ess.enabled", "needs stereo.calibration -- the rectify maps are built from it");
+    }
+    if (config.ess.engine_path.empty()) {
+      fail("ess.engine_path", "empty, but ess.enabled is set");
+    }
+    if (!(config.ess.display_max_disparity > config.ess.display_min_disparity)) {
+      fail("ess.display_max_disparity", "must be greater than ess.display_min_disparity");
+    }
+  }
+  if (config.viewer_mode == ViewerMode::Ess && !config.ess.enabled) {
+    fail("viewer", "'ess' is the disparity window; set ess.enabled to run the engine behind it");
   }
 
   config.upload.device_id = config.pipeline.device_id;

@@ -7,6 +7,7 @@
 #include "camera_config.hpp"
 #include "device_ring_buffer.hpp"
 #include "display_config.hpp"
+#include "ess_config.hpp"
 #include "recording_source.hpp"
 #include "stereo_calibration.hpp"
 #include "ring_pair_consumer.hpp"
@@ -51,6 +52,7 @@ enum class ViewerMode {
   Camera,
   Yolo,
   Headless,
+  Ess,
 };
 
 const char* to_string(ViewerMode mode);
@@ -67,6 +69,7 @@ struct AppConfig {
   DisplayConfig display;
   ActionSyncConfig action_sync;
   YoloConfig yolo;
+  EssConfig ess;
 
   // Loaded only when stereo.enabled and stereo.calibration_path is set.
   bool have_calibration = false;

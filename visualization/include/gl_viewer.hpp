@@ -72,11 +72,16 @@ class GlViewer {
   void present_gpu_boxes(const void* src, cudaStream_t stream, double latency_ms,
                         const std::function<void(cudaSurfaceObject_t)>& draw_boxes);
 
+  void present_gpu(cudaStream_t stream, double latency_ms,
+                  const std::function<void(cudaSurfaceObject_t)>& fill);
+
   // Frames presented, and the host time spent inside present() on the last one.
   uint64_t presented() const { return presented_; }
   double last_present_ms() const { return last_present_ms_; }
 
  private:
+  void present_impl(const void* src, cudaStream_t stream, double latency_ms,
+                   const std::function<void(cudaSurfaceObject_t)>& fill);
   void draw(double latency_ms);
 
   ImageDesc image_{};

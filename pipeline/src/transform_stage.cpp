@@ -43,16 +43,10 @@ TransformStage::~TransformStage() {
 }
 
 bool TransformStage::step() {
-  // Unleased peek first, so an idle poll costs a couple of atomic loads rather
-  // than a lease acquire and release.
   FramePeek peek;
   if (!in_->view_latest_inplace(peek)) return false;
   if (have_last_ && peek.slot == last_slot_ && peek.slot_seq == last_seq_) return false;
 
-  // The lease pins whatever discovery lands on -- possibly newer than the peek,
-  // which is fine, latest-wins either way. From here the source cannot be
-  // recycled underneath the transform, which is what makes the read safe rather
-  // than merely unlikely to be torn.
   ReadLease lease = in_->lease_latest(config_.consumer_id, stream_);
   if (!lease.valid()) {
     missed_.fetch_add(1, std::memory_order_relaxed);
@@ -65,13 +59,8 @@ bool TransformStage::step() {
   WriteLease out_lease = out_->acquire_write(stream_);
   transform_->enqueue(lease.data(), input_desc_, out_lease.data(), output_desc_, stream_);
 
-  // The input frame's capture time travels with the derived frame -- consumers
-  // downstream time detections by capture instant, not by arrival.
   out_lease.publish(lease.timestamp_ns());
 
-  // Records read completion against our stream, so the upstream producer orders
-  // its next write to this slot behind the transform. Safe to do now: the work
-  // is enqueued, and nothing waits for it to finish.
   const uint32_t slot = lease.slot();
   const uint64_t seq = lease.seq();
   lease.drop_hold();

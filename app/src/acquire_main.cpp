@@ -16,6 +16,8 @@
 #include "app_config.hpp"
 #include "cuda_util.hpp"
 #include "device_ring_buffer.hpp"
+#include "ess_engine.hpp"
+#include "ess_viewer_consumer.hpp"
 #include "host_ingress_ring.hpp"
 #include "latency_probe.hpp"
 #include "report.hpp"
@@ -229,9 +231,29 @@ int main(int argc, char** argv) {
             perception::HeadlessYoloConsumer::OutputLocation::Host, kSecondaryConsumerId,
             config.pipeline.device_id);
         break;
+      case perception::ViewerMode::Ess:
+        // Built below: it drives the pair consumer, which does not exist yet.
+        break;
+    }
+
+    const bool ess_in_viewer = config.viewer_mode == perception::ViewerMode::Ess;
+    std::unique_ptr<perception::EssEngine> ess;
+    if (config.ess.enabled && stereo_enabled && !ess_in_viewer) {
+      perception::EssEngine::Config ess_config;
+      ess_config.engine_path = perception::resolve_next_to_exe(config.ess.engine_path);
+      ess_config.normalization = config.ess.normalization;
+      ess_config.conf_threshold = config.ess.conf_threshold;
+      ess_config.device_id = config.pipeline.device_id;
+      ess = std::make_unique<perception::EssEngine>(display_desc, config.calibration,
+                                                    std::move(ess_config));
+    } else if (config.ess.enabled && !stereo_enabled) {
+      std::printf("ess: disabled -- disparity needs a pair, and stereo pairing is off\n");
     }
 
     std::unique_ptr<perception::RingPairConsumer> stereo;
+    // After `stereo`, so its thread -- which this one drives -- is joined
+    // before the consumer it is driving goes away.
+    std::unique_ptr<perception::EssViewerConsumer> ess_viewer;
     if (stereo_enabled) {
       const uint32_t ref_index = config.stereo.reference_stream;
       const uint32_t other_index = ref_index == 0 ? 1u : 0u;
@@ -240,23 +262,43 @@ int main(int argc, char** argv) {
           *streams[ref_index]->device_ring, *streams[other_index]->device_ring,
           config.stereo.consumer, kRingPairConsumerId, config.pipeline.device_id);
 
-      stereo->set_pair_callback([](const perception::ReadLease& /*reference*/,
-                                   const perception::ReadLease& /*other*/, int64_t /*skew_ns*/,
-                                   uint64_t /*pair_id*/, cudaStream_t /*stream*/) {
-        // Intentionally empty for now.
-        //
-        // Both leases are held and `stream` is already ordered behind both
-        // frames' data-ready events, so work enqueued here may read either
-        // frame directly -- this is where rectification and disparity will go,
-        // using config.calibration.
-        //
-        // Two rules when filling it in. Do not block: the leases are holding a
-        // slot in each ring, and the frame is only guaranteed stable while they
-        // live. And read the frames on `stream` and nowhere else -- the
-        // read-completion event is recorded only against it, so a read from
-        // another stream or from the host is not covered and the producer may
-        // overwrite underneath it.
-      });
+      if (ess) {
+        stereo->set_pair_callback([&ess, ref_index](const perception::ReadLease& reference,
+                                                    const perception::ReadLease& other,
+                                                    int64_t skew_ns, uint64_t pair_id,
+                                                    cudaStream_t stream) {
+        const perception::ReadLease& left = ref_index == 0 ? reference : other;
+        const perception::ReadLease& right = ref_index == 0 ? other : reference;
+
+        ess->enqueue(left.texture(), right.texture(), stream);
+
+        if (pair_id % 60 != 0) return;
+
+        perception::EssEngine::FrameTiming timing;
+        perception::EssEngine::Sample sample;
+        const bool have_timing = ess->last_timing(timing);
+        const bool have_sample = ess->last_sample(sample);
+        std::printf(
+            "  ess: pairs=%lu skew=%ldus pre=%.2fms infer=%.2fms total=%.2fms "
+            "d(%u,%u)=%.2fpx z=%.2fm conf=%.2f%s\n",
+            static_cast<unsigned long>(pair_id + 1), static_cast<long>(skew_ns / 1000),
+            have_timing ? timing.preprocess_ms : -1.0, have_timing ? timing.inference_ms : -1.0,
+            have_timing ? timing.total_ms : -1.0, sample.x, sample.y,
+            have_sample ? sample.disparity_px : -1.0f, have_sample ? sample.depth_m : -1.0,
+            have_sample ? sample.confidence : -1.0f,
+            have_sample && !sample.trusted ? " (untrusted)" : "");
+        });
+      }
+
+      // The disparity window sets its own pair callback and drives step()
+      // itself, so the pair consumer's thread stays unstarted below.
+      if (ess_in_viewer && config.ess.enabled) {
+        perception::EssConfig ess_view_config = config.ess;
+        ess_view_config.engine_path = perception::resolve_next_to_exe(ess_view_config.engine_path);
+        ess_viewer = std::make_unique<perception::EssViewerConsumer>(
+            *stereo, ref_index, reference.probe, display_desc, config.calibration, config.display,
+            ess_view_config, config.pipeline.device_id);
+      }
 
       std::printf(
           "stereo: pairing %s (reference) against %s at %luus, %u retry x %ldms, calibration %s\n",
@@ -265,7 +307,7 @@ int main(int argc, char** argv) {
           config.stereo.consumer.retry_attempts,
           static_cast<long>(config.stereo.consumer.retry_wait.count()),
           config.have_calibration ? "loaded" : "none");
-      stereo->start();
+      if (!ess_viewer) stereo->start();
     }
 
     // Closed only ever means "the window the user had open just went away";
@@ -273,14 +315,17 @@ int main(int argc, char** argv) {
     auto secondary_closed = [&] {
       if (camera_viewer) return camera_viewer->closed();
       if (yolo_viewer) return yolo_viewer->closed();
+      if (ess_viewer) return ess_viewer->closed();
       return false;
     };
 
     if (camera_viewer) camera_viewer->start();
     if (yolo_viewer) yolo_viewer->start();
     if (headless_yolo) headless_yolo->start();
+    if (ess_viewer) ess_viewer->start();
 
     auto stop_helpers = [&] {
+      if (ess_viewer) ess_viewer->stop();
       if (stereo) stereo->stop();
       if (camera_viewer) camera_viewer->stop();
       if (yolo_viewer) yolo_viewer->stop();
