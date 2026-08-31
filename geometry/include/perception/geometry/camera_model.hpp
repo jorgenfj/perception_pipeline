@@ -383,6 +383,96 @@ struct PinholeCameraModel {
   }
 };
 
+/**
+ * @brief Calculate newIntrinsics for a uniformly scaled image: cx' = s * (cx +
+ * 0.5) - 0.5.
+ *
+ * The half pixel is this header's pixel-centre convention, the scale acts on
+ * centres, not on the grid's left edge.
+ *
+ * @param intrinsics The camera at the original size.
+ * @param scale Applied to both axes.
+ * @return The intrinsics that project into the scaled image.
+ *
+ * @throws std::runtime_error if `scale` is not positive and finite.
+ */
+CameraIntrinsics scale_intrinsics(const CameraIntrinsics &intrinsics,
+                                  double scale);
+
+/**
+ * @brief Calculate new Intrinsics for an image with `left` columns and `top`
+ * rows taken off.
+ *
+ * A pure translation of the principal point
+ *
+ * @param intrinsics The camera at the uncropped size.
+ * @param left Columns off the left. Negative pads instead, which is
+ *        letterboxing.
+ * @param top Rows off the top, same convention.
+ * @return The intrinsics that project into the cropped image.
+ *
+ * @throws std::runtime_error if either offset is not finite.
+ */
+CameraIntrinsics crop_intrinsics(const CameraIntrinsics &intrinsics,
+                                 double left, double top);
+
+/**
+ * @brief How a resize pays for an aspect mismatch.
+ */
+enum class ResizeFit {
+  /** Cover the target and crop the excess.*/
+  Crop,
+  /** Fit the whole source inside the target and pad the rest.*/
+  Pad,
+};
+
+/**
+ * @brief The uniform scale `fit` applies.
+ *
+ * Pixel distances that are not intrinsics -- a disparity -- scale by this too.
+ *
+ * @param source The size being resized from.
+ * @param target The size being resized to.
+ * @param fit Which way the aspect mismatch is paid for.
+ * @return The larger axis ratio for Crop, the smaller for Pad.
+ *
+ * @throws std::runtime_error if either size is empty.
+ */
+double resize_scale(ImageSize source, ImageSize target, ResizeFit fit);
+
+/**
+ * @brief The offset `fit` applies after scaling, in target pixels.
+ *
+ * @param source The size being resized from.
+ * @param target The size being resized to.
+ * @param fit Which way the aspect mismatch is paid for.
+ * @return Positive to come off each side (Crop), negative to inset the image
+ *         (Pad). One number, because the two fits are one operation seen from
+ *         two sides.
+ *
+ * @throws std::runtime_error if either size is empty.
+ */
+Eigen::Vector2d resize_offset(ImageSize source, ImageSize target,
+                              ResizeFit fit);
+
+/**
+ * @brief Intrinsics for the same camera seen through a resized image.
+ *
+ * scale_intrinsics() by resize_scale(), then crop_intrinsics() by
+ * resize_offset().
+ *
+ * @param intrinsics The camera as calibrated at `source`.
+ * @param source The size the intrinsics were calibrated at.
+ * @param target The size of the resized image.
+ * @param fit Which way the aspect mismatch is paid for.
+ * @return The intrinsics that project into the resized image.
+ *
+ * @throws std::runtime_error if either size is empty.
+ */
+CameraIntrinsics resize_intrinsics(const CameraIntrinsics &intrinsics,
+                                   ImageSize source, ImageSize target,
+                                   ResizeFit fit);
+
 } // namespace perception::geometry
 
 #endif // PERCEPTION_GEOMETRY_CAMERA_MODEL_HPP

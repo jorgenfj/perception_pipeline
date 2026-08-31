@@ -10,6 +10,13 @@
 
 using perception::geometry::CameraDistortionModel;
 using perception::geometry::CameraIntrinsics;
+using perception::geometry::ResizeFit;
+using perception::geometry::crop_intrinsics;
+using perception::geometry::resize_offset;
+using perception::geometry::resize_scale;
+using perception::geometry::scale_intrinsics;
+using perception::geometry::ImageSize;
+using perception::geometry::resize_intrinsics;
 using perception::geometry::Rectification;
 using perception::geometry::rectified_to_source_pixel;
 
@@ -383,6 +390,200 @@ TEST_F(UndistortConvergenceTests, test_the_frame_sits_inside_the_limit) {
     std::printf("  [ INFO ] invertible radius %.5f, frame corner 0.40350, "
                 "margin %.2fx\n",
                 lo, lo / 0.4035);
+}
+
+class ResizeIntrinsicsTests : public ::testing::Test {
+   public:
+    // A 4:3 camera and the 5:3 grid a network wants it on. Cropping to fill it
+    // scales by 960/1440 = 2/3 and takes 144 rows, 72 off each end.
+    static constexpr ImageSize kSource{1440, 1080};
+    static constexpr ImageSize kTarget{960, 576};
+
+    static CameraIntrinsics camera() {
+        return CameraIntrinsics{.fx = 2329.75, .fy = 2329.57, .cx = 754.5, .cy = 560.6};
+    }
+};
+
+TEST_F(ResizeIntrinsicsTests, test_crop_takes_the_larger_ratio) {
+    EXPECT_DOUBLE_EQ(resize_scale(kSource, kTarget, ResizeFit::Crop), 2.0 / 3.0);
+
+    // 1080 * 2/3 = 720 against a 576 target: 144 rows over, 72 off each end.
+    const Eigen::Vector2d offset = resize_offset(kSource, kTarget, ResizeFit::Crop);
+    EXPECT_DOUBLE_EQ(offset.x(), 0.0);
+    EXPECT_DOUBLE_EQ(offset.y(), 72.0);
+
+    // Taller target: height is now the binding axis, and the crop moves to x.
+    EXPECT_DOUBLE_EQ(resize_scale(kSource, ImageSize{960, 960}, ResizeFit::Crop),
+                     960.0 / 1080.0);
+}
+
+TEST_F(ResizeIntrinsicsTests, test_pad_takes_the_smaller_ratio) {
+    // 576/1080 fits the whole frame inside the target; 1440 * 0.5333 = 768
+    // leaves 192 columns of pad, 96 a side. The offset is that pad, negative.
+    EXPECT_DOUBLE_EQ(resize_scale(kSource, kTarget, ResizeFit::Pad), 576.0 / 1080.0);
+
+    const Eigen::Vector2d offset = resize_offset(kSource, kTarget, ResizeFit::Pad);
+    EXPECT_DOUBLE_EQ(offset.x(), -96.0);
+    EXPECT_DOUBLE_EQ(offset.y(), 0.0);
+}
+
+// The two fits are one operation, and an exact aspect match is where that shows:
+// nothing to crop is also nothing to pad, so they agree exactly.
+TEST_F(ResizeIntrinsicsTests, test_the_fits_agree_when_the_aspect_matches) {
+    for (const ImageSize target : {ImageSize{720, 540}, kSource}) {
+        EXPECT_DOUBLE_EQ(resize_scale(kSource, target, ResizeFit::Crop),
+                         resize_scale(kSource, target, ResizeFit::Pad));
+        EXPECT_EQ(resize_offset(kSource, target, ResizeFit::Crop),
+                  resize_offset(kSource, target, ResizeFit::Pad));
+        EXPECT_DOUBLE_EQ(resize_offset(kSource, target, ResizeFit::Crop).x(), 0.0);
+    }
+    EXPECT_DOUBLE_EQ(resize_scale(kSource, ImageSize{720, 540}, ResizeFit::Crop), 0.5);
+}
+
+// The scale primitive on its own. Scaling about pixel centres rather than the
+// grid origin is what makes it compose: two scales are one scale by the
+// product, which a dropped half pixel breaks.
+TEST_F(ResizeIntrinsicsTests, test_scale_alone_is_uniform_and_composes) {
+    const CameraIntrinsics full = camera();
+
+    const CameraIntrinsics half = scale_intrinsics(full, 0.5);
+    EXPECT_DOUBLE_EQ(half.fx, 0.5 * full.fx);
+    EXPECT_DOUBLE_EQ(half.fy, 0.5 * full.fy);
+    EXPECT_DOUBLE_EQ(half.cx, 0.5 * (full.cx + 0.5) - 0.5);
+    EXPECT_DOUBLE_EQ(half.cy, 0.5 * (full.cy + 0.5) - 0.5);
+
+    const CameraIntrinsics twice = scale_intrinsics(scale_intrinsics(full, 0.5), 0.5);
+    const CameraIntrinsics once = scale_intrinsics(full, 0.25);
+    EXPECT_DOUBLE_EQ(twice.fx, once.fx);
+    EXPECT_NEAR(twice.cx, once.cx, 1e-12);
+    EXPECT_NEAR(twice.cy, once.cy, 1e-12);
+
+    const CameraIntrinsics unchanged = scale_intrinsics(full, 1.0);
+    EXPECT_DOUBLE_EQ(unchanged.cx, full.cx);
+    EXPECT_DOUBLE_EQ(unchanged.cy, full.cy);
+
+    EXPECT_THROW(scale_intrinsics(full, 0.0), std::runtime_error);
+    EXPECT_THROW(scale_intrinsics(full, -0.5), std::runtime_error);
+}
+
+// The crop primitive on its own: a pure translation, so the focals do not move
+// and no half pixel enters. Negative is a pad, which is the only thing that
+// makes letterboxing the same operation as cropping.
+TEST_F(ResizeIntrinsicsTests, test_crop_alone_only_moves_the_centre) {
+    const CameraIntrinsics full = camera();
+
+    const CameraIntrinsics cropped = crop_intrinsics(full, 100.0, 72.0);
+    EXPECT_DOUBLE_EQ(cropped.fx, full.fx);
+    EXPECT_DOUBLE_EQ(cropped.fy, full.fy);
+    EXPECT_DOUBLE_EQ(cropped.cx, full.cx - 100.0);
+    EXPECT_DOUBLE_EQ(cropped.cy, full.cy - 72.0);
+
+    // Additive, and a pad is a crop the other way -- so one undoes the other.
+    const CameraIntrinsics back = crop_intrinsics(cropped, -100.0, -72.0);
+    EXPECT_DOUBLE_EQ(back.cx, full.cx);
+    EXPECT_DOUBLE_EQ(back.cy, full.cy);
+
+    EXPECT_THROW(crop_intrinsics(full, std::nan(""), 0.0), std::runtime_error);
+}
+
+// And the composition is the whole of resize_intrinsics(): scale, then crop by
+// the offset. Stated as a test so the main function cannot drift from the two
+// primitives it is meant to be made of.
+TEST_F(ResizeIntrinsicsTests, test_resize_is_scale_then_crop) {
+    for (const ResizeFit fit : {ResizeFit::Crop, ResizeFit::Pad}) {
+        const Eigen::Vector2d offset = resize_offset(kSource, kTarget, fit);
+        const CameraIntrinsics composed =
+            crop_intrinsics(scale_intrinsics(camera(), resize_scale(kSource, kTarget, fit)),
+                            offset.x(), offset.y());
+        const CameraIntrinsics resized = resize_intrinsics(camera(), kSource, kTarget, fit);
+
+        EXPECT_DOUBLE_EQ(resized.fx, composed.fx);
+        EXPECT_DOUBLE_EQ(resized.fy, composed.fy);
+        EXPECT_DOUBLE_EQ(resized.cx, composed.cx);
+        EXPECT_DOUBLE_EQ(resized.cy, composed.cy);
+    }
+}
+
+TEST_F(ResizeIntrinsicsTests, test_focals_scale_and_the_centre_moves_with_the_crop) {
+    const CameraIntrinsics resized =
+        resize_intrinsics(camera(), kSource, kTarget, ResizeFit::Crop);
+    const double s = 2.0 / 3.0;
+
+    EXPECT_DOUBLE_EQ(resized.fx, s * camera().fx);
+    EXPECT_DOUBLE_EQ(resized.fy, s * camera().fy);
+
+    // cx' = s * (cx + 0.5) - 0.5, no horizontal crop.
+    EXPECT_DOUBLE_EQ(resized.cx, s * (camera().cx + 0.5) - 0.5);
+    // cy' carries the 72-row crop on top of the same scaling.
+    EXPECT_DOUBLE_EQ(resized.cy, s * (camera().cy + 0.5) - 0.5 - 72.0);
+
+    EXPECT_NO_THROW(resized.validate_intrinsics());
+}
+
+// Letterboxing moves the principal point *inwards* by the pad, where a crop
+// moves it outwards -- the same subtraction, the offset's sign doing the work.
+TEST_F(ResizeIntrinsicsTests, test_letterbox_insets_the_principal_point) {
+    const CameraIntrinsics resized =
+        resize_intrinsics(camera(), kSource, kTarget, ResizeFit::Pad);
+    const double s = 576.0 / 1080.0;
+
+    EXPECT_DOUBLE_EQ(resized.fx, s * camera().fx);
+    EXPECT_DOUBLE_EQ(resized.cx, s * (camera().cx + 0.5) - 0.5 + 96.0);
+    EXPECT_DOUBLE_EQ(resized.cy, s * (camera().cy + 0.5) - 0.5);
+    EXPECT_NO_THROW(resized.validate_intrinsics());
+
+    // The source's left edge lands at target column 96, so a pixel in the pad
+    // band projects to a negative source coordinate: nothing was sampled there.
+    EXPECT_DOUBLE_EQ(resize_offset(kSource, kTarget, ResizeFit::Pad).x(), -96.0);
+}
+
+TEST_F(ResizeIntrinsicsTests, test_resizing_to_the_same_size_changes_nothing) {
+    const CameraIntrinsics resized =
+        resize_intrinsics(camera(), kSource, kSource, ResizeFit::Crop);
+
+    EXPECT_DOUBLE_EQ(resized.fx, camera().fx);
+    EXPECT_DOUBLE_EQ(resized.fy, camera().fy);
+    EXPECT_DOUBLE_EQ(resized.cx, camera().cx);
+    EXPECT_DOUBLE_EQ(resized.cy, camera().cy);
+}
+
+// The half pixel is the whole reason this is a helper rather than a
+// multiplication at each call site: projecting a point through the resized
+// intrinsics must land where the resize maps the full-resolution projection,
+// and a dropped +0.5 misses by half a pixel times (1 - s) everywhere at once.
+TEST_F(ResizeIntrinsicsTests, test_projection_agrees_with_the_pixel_mapping) {
+    const CameraIntrinsics full = camera();
+
+    for (const ResizeFit fit : {ResizeFit::Crop, ResizeFit::Pad}) {
+        const CameraIntrinsics resized = resize_intrinsics(full, kSource, kTarget, fit);
+        const double s = resize_scale(kSource, kTarget, fit);
+        const Eigen::Vector2d offset = resize_offset(kSource, kTarget, fit);
+
+        for (const Eigen::Vector2d& normalized :
+             {Eigen::Vector2d{0.0, 0.0}, Eigen::Vector2d{0.21, -0.13},
+              Eigen::Vector2d{-0.3, 0.27}}) {
+            const Eigen::Vector2d in_full = full.normalized_to_pixel(normalized);
+            const Eigen::Vector2d in_target = resized.normalized_to_pixel(normalized);
+
+            // Forward: the same scale-and-offset the intrinsics encode.
+            EXPECT_NEAR(in_target.x(), s * (in_full.x() + 0.5) - 0.5 - offset.x(), 1e-9);
+            EXPECT_NEAR(in_target.y(), s * (in_full.y() + 0.5) - 0.5 - offset.y(), 1e-9);
+
+            // And back again, undoing the scale and offset by hand.
+            const Eigen::Vector2d round_trip{
+                (in_target.x() + offset.x() + 0.5) / s - 0.5,
+                (in_target.y() + offset.y() + 0.5) / s - 0.5};
+            EXPECT_TRUE(VectorsNear(round_trip, in_full, 1e-9));
+        }
+    }
+}
+
+TEST_F(ResizeIntrinsicsTests, test_rejects_an_unset_size) {
+    EXPECT_THROW(resize_scale(kSource, ImageSize{}, ResizeFit::Crop), std::runtime_error);
+    EXPECT_THROW(resize_intrinsics(camera(), ImageSize{}, kTarget, ResizeFit::Pad),
+                 std::runtime_error);
+    EXPECT_THROW(resize_offset(kSource, ImageSize{960, 0}, ResizeFit::Crop),
+                 std::runtime_error);
 }
 
 class RectificationTests : public ::testing::Test {

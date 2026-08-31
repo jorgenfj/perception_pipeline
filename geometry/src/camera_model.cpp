@@ -1,5 +1,6 @@
 #include <perception/geometry/camera_model.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <format>
 #include <stdexcept>
@@ -58,6 +59,75 @@ CameraDistortionModel::undistort_normalized(const Eigen::Vector2d &point,
       "({}, {}) after {} iterations -- residual {}, tolerance {}. The point is "
       "outside the region this distortion model can invert",
       x_dist, y_dist, iterations, residual, kUndistortTolerance));
+}
+
+namespace {
+
+void require_sizes(ImageSize source, ImageSize target, const char *what) {
+  if (source.empty()) {
+    throw std::runtime_error(std::format("{}: zero-sized source image", what));
+  }
+  if (target.empty()) {
+    throw std::runtime_error(std::format("{}: zero-sized target image", what));
+  }
+}
+
+} // namespace
+
+CameraIntrinsics scale_intrinsics(const CameraIntrinsics &intrinsics,
+                                  double scale) {
+  if (!(scale > 0.0) || !std::isfinite(scale)) {
+    throw std::runtime_error(std::format(
+        "scale_intrinsics: scale must be positive and finite, got {}", scale));
+  }
+
+  return CameraIntrinsics{
+      .fx = scale * intrinsics.fx,
+      .fy = scale * intrinsics.fy,
+      .cx = scale * (intrinsics.cx + 0.5) - 0.5,
+      .cy = scale * (intrinsics.cy + 0.5) - 0.5,
+  };
+}
+
+CameraIntrinsics crop_intrinsics(const CameraIntrinsics &intrinsics,
+                                 double left, double top) {
+  if (!std::isfinite(left) || !std::isfinite(top)) {
+    throw std::runtime_error(std::format(
+        "crop_intrinsics: crop must be finite, got ({}, {})", left, top));
+  }
+
+  CameraIntrinsics cropped = intrinsics;
+  cropped.cx -= left;
+  cropped.cy -= top;
+  return cropped;
+}
+
+double resize_scale(ImageSize source, ImageSize target, ResizeFit fit) {
+  require_sizes(source, target, "resize_scale");
+
+  const double by_width = static_cast<double>(target.width) / source.width;
+  const double by_height = static_cast<double>(target.height) / source.height;
+
+  return fit == ResizeFit::Crop ? std::max(by_width, by_height)
+                                : std::min(by_width, by_height);
+}
+
+Eigen::Vector2d resize_offset(ImageSize source, ImageSize target,
+                              ResizeFit fit) {
+  const double scale = resize_scale(source, target, fit);
+
+  return {0.5 * (source.width * scale - target.width),
+          0.5 * (source.height * scale - target.height)};
+}
+
+CameraIntrinsics resize_intrinsics(const CameraIntrinsics &intrinsics,
+                                   ImageSize source, ImageSize target,
+                                   ResizeFit fit) {
+  const Eigen::Vector2d offset = resize_offset(source, target, fit);
+
+  return crop_intrinsics(
+      scale_intrinsics(intrinsics, resize_scale(source, target, fit)),
+      offset.x(), offset.y());
 }
 
 } // namespace perception::geometry
