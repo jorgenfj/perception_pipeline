@@ -24,6 +24,10 @@ target_compile_definitions(stereo_calibration_test
   PRIVATE PERCEPTION_APP_CONFIG_DIR="${CMAKE_SOURCE_DIR}/app/config")
 add_test(NAME stereo_calibration_test COMMAND stereo_calibration_test)
 
+add_executable(rectify_map_test rectify_map_test.cpp)
+target_link_libraries(rectify_map_test PRIVATE perception_geometry)
+add_test(NAME rectify_map_test COMMAND rectify_map_test)
+
 add_executable(cpu_debayer_test cpu_debayer_test.cpp)
 target_link_libraries(cpu_debayer_test PRIVATE perception_stereo)
 add_test(NAME cpu_debayer_test COMMAND cpu_debayer_test)
@@ -38,9 +42,4 @@ if(PERCEPTION_WITH_CUDA)
   target_link_libraries(upload_stage_test PRIVATE perception_core)
   add_test(NAME upload_stage_test COMMAND upload_stage_test)
 
-  # Host-side only -- it builds maps and reads them back. It needs a CUDA build
-  # for perception_processing to exist, but no device.
-  add_executable(rectify_map_test rectify_map_test.cpp)
-  target_link_libraries(rectify_map_test PRIVATE perception_processing)
-  add_test(NAME rectify_map_test COMMAND rectify_map_test)
 endif()

@@ -3,9 +3,9 @@
 
 #include <array>
 #include <cmath>
-#include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <eigen3/Eigen/Dense>
 
@@ -123,21 +123,38 @@ struct StereoExtrinsics {
    */
   static StereoExtrinsics from_row_major(const std::array<double, 9> &r,
                                          const std::array<double, 3> &t,
-                                         double baseline);
+                                         double baseline) {
+    StereoExtrinsics extrinsics;
+    extrinsics.rotation << r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8];
+    extrinsics.translation_m << t[0], t[1], t[2];
+    extrinsics.baseline_m = baseline;
+    extrinsics.validate();
+
+    return extrinsics;
+  }
 };
 
 /**
  * @brief Both halves of one cv::stereoRectify run, and the Q that goes with
  *        them.
  *
- * Indexed to match the cameras it rectifies, so cameras[0] is the reference camera,
- * the one stereoRectify leaves at the origin of the rectified frame, and the
- * one that therefore carries no baseline offset in its projection.
+ * Indexed to match the cameras it rectifies, so cameras[0] is the reference
+ * camera, the one stereoRectify leaves at the origin of the rectified frame,
+ * and the one that therefore carries no baseline offset in its projection.
  */
 struct StereoRectification {
   Rectification cameras[2];
 
-  /** Q: [X Y Z W]^T = Q * [u v disparity 1]^T. */
+  /**
+   * @brief Reprojects a disparity measurement to a 3D point in the rectified
+   * left camera frame: [X Y Z W]^T = Q * [u v disparity 1]^T, with the point at
+   * (X/W, Y/W, Z/W).
+   *
+   *     | 1  0   0        -cx     |
+   *     | 0  1   0        -cy     |
+   *     | 0  0   0         fx     |
+   *     | 0  0  -1/Tx   (cx-cx')/Tx |
+   */
   Eigen::Matrix4d disparity_to_depth{Eigen::Matrix4d::Zero()};
 
   /**
@@ -162,8 +179,8 @@ struct StereoRectification {
   /**
    * @brief The baseline the rectified projections imply, in metres.
    *
-   * The whole baseline lives in cameras[1]: P2(0,3) is -fx * Tx and the reference
-   * camera carries no offset.
+   * The whole baseline lives in cameras[1]: P2(0,3) is -fx * Tx and the
+   * reference camera carries no offset.
    *
    * @return |-P2(0,3) / P2(0,0)|.
    */
@@ -260,6 +277,46 @@ struct StereoCalibration {
 std::optional<Eigen::Vector2d> rectified_to_source_pixel(
     const CameraIntrinsics &intrinsics, const CameraDistortionModel &distortion,
     const Rectification &rectification, double u, double v);
+
+/**
+ * @brief Create a lookup table going from rectified coords to the corresponding
+ * coordinate in the original distored image from the camera.
+ *
+ * @param camera The intrinsics and distortion of the source camera
+ * @param rectification The rectification of the camera
+ * @param rectified_size The size of the rectified image
+ * @return 2 * rectified.width * rectified.height floats, in source pixels.
+ *
+ * @throws std::runtime_error if `rectified` is empty or the intrinsics are
+ *         unusable.
+ */
+std::vector<float> build_rectify_map(const PinholeCameraModel &camera,
+                                     const Rectification &rectification,
+                                     ImageSize rectified_size);
+
+/**
+ * @brief Scale the projection matrix of a rectification for a new rectified
+ * image size
+ *
+ * @param rectification This camera's R and P from stereoRectify.
+ * @param rectified_size The size P was computed for.
+ * @param target The grid to restate it on.
+ * @param fit Which way the aspect mismatch is paid for.
+ */
+Rectification resize_rectification(const Rectification &rectification,
+                    ImageSize rectified_size, ImageSize target_size,
+                    ResizeFit fit);
+
+/**
+ * @brief Scale the projection matrix of both cameras
+ * and the disparity_to_depth (Q) matrix.
+ *
+ * @param stereo_rect The stereo rectification for this camera pair
+ * @param target_size The grid to restate it on.
+ * @param fit Which way the aspect mismatch is paid for.
+ */
+StereoRectification resize_rectification(const StereoRectification &stereo_rect,
+                                         ImageSize target_size, ResizeFit fit);
 
 } // namespace perception::geometry
 

@@ -418,6 +418,7 @@ CameraIntrinsics crop_intrinsics(const CameraIntrinsics &intrinsics,
 
 /**
  * @brief How a resize pays for an aspect mismatch.
+ * Options: ResizeFit::Crop or ResizeFit::Pad
  */
 enum class ResizeFit {
   /** Cover the target and crop the excess.*/

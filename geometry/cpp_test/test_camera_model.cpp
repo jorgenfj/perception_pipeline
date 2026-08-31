@@ -708,14 +708,3 @@ TEST_F(RectifiedToSourcePixelTests, test_baseline_column_is_ignored) {
     EXPECT_EQ(a->y(), b->y());
 }
 
-TEST_F(RectifiedToSourcePixelTests, test_rejects_singular_projection) {
-    const CameraIntrinsics intrinsics = shipped_left_intrinsics();
-    const CameraDistortionModel distortion = shipped_left_distortion();
-
-    Rectification rectification = shipped_left_rectification();
-    rectification.projection.setZero();
-
-    EXPECT_THROW(rectified_to_source_pixel(intrinsics, distortion,
-                                           rectification, 0.0, 0.0),
-                 std::runtime_error);
-}

@@ -29,18 +29,6 @@ void StereoExtrinsics::validate() const {
   }
 }
 
-StereoExtrinsics StereoExtrinsics::from_row_major(
-    const std::array<double, 9> &r, const std::array<double, 3> &t,
-    double baseline) {
-  StereoExtrinsics extrinsics;
-  extrinsics.rotation << r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8];
-  extrinsics.translation_m << t[0], t[1], t[2];
-  extrinsics.baseline_m = baseline;
-  extrinsics.validate();
-
-  return extrinsics;
-}
-
 void StereoRectification::validate() const {
   if (cameras[0].baseline_term() != 0.0) {
     throw std::runtime_error(std::format(
@@ -79,14 +67,14 @@ void StereoRectification::validate() const {
   if (differs(first.fx, second.fx) || differs(first.fy, second.fy) ||
       differs(first.cy, second.cy)) {
     throw std::runtime_error(std::format(
-        "StereoRectification: the two eyes must share fx, fy and cy, but P1 "
+        "StereoRectification: the two cameras must share fx, fy and cy, but P1 "
         "has ({}, {}, {}) and P2 has ({}, {}, {})",
         first.fx, first.fy, first.cy, second.fx, second.fy, second.cy));
   }
 
   if (differs(first.cx, second.cx)) {
     throw std::runtime_error(std::format(
-        "StereoRectification: the eyes have principal points {} and {}, so "
+        "StereoRectification: the cameras have principal points {} and {}, so "
         "disparity is {} at infinity rather than zero. Support for a pair with "
         "differing principal points is not implemented: depth is computed as "
         "fx * baseline / disparity, which drops that offset and reads long "
@@ -97,7 +85,7 @@ void StereoRectification::validate() const {
 
   if (std::abs(disparity_to_depth(3, 3)) > kIntrinsicsTolerance_px) {
     throw std::runtime_error(std::format(
-        "StereoRectification: the eyes share a principal point, so Q(3,3) must "
+        "StereoRectification: the cameras share a principal point, so Q(3,3) must "
         "be zero, but Q says {}; the projections and the disparity-to-depth "
         "matrix came from different runs",
         disparity_to_depth(3, 3)));
@@ -150,23 +138,4 @@ bool rectifying_rotations_agree(const StereoRectification &rectification,
       .isApprox(rectification.cameras[0].rotation, tolerance);
 }
 
-std::optional<Eigen::Vector2d> rectified_to_source_pixel(
-    const CameraIntrinsics &intrinsics, const CameraDistortionModel &distortion,
-    const Rectification &rectification, double u, double v) {
-
-  const Eigen::Vector3d ray =
-      rectification.rectified_intrinsics().backproject_ray({u, v});
-
-  const Eigen::Vector3d camera_ray = rectification.rotation.transpose() * ray;
-
-  if (camera_ray.z() <= 0.0) {
-    return std::nullopt;
-  }
-
-  const Eigen::Vector2d normalized = camera_ray.hnormalized();
-
-  const Eigen::Vector2d distorted = distortion.distort_normalized(normalized);
-
-  return intrinsics.normalized_to_pixel(distorted);
-}
 } // namespace perception::geometry
