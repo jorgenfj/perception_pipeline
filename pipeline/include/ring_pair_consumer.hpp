@@ -28,8 +28,8 @@ class RingPairConsumer {
   // `stream` already ordered behind both frames' data-ready events -- so work
   // enqueued on it may read either frame directly. Do not block in here: the
   // leases are holding a slot in each ring.
-  using PairCallback = std::function<void(const ReadLease& reference, const ReadLease& other,
-                                          int64_t skew_ns, uint64_t pair_id, cudaStream_t stream)>;
+  using PairCallback = std::function<void(ReadLease& reference, ReadLease& other, int64_t skew_ns,
+                                          uint64_t pair_id, cudaStream_t stream)>;
 
   RingPairConsumer(DeviceRingBuffer& reference, DeviceRingBuffer& other, Config config,
                  uint32_t consumer_id, int device_id);

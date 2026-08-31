@@ -83,6 +83,39 @@ void test_pairs_when_both_present() {
   check(stereo.paired() == 1, "and the count does not move");
 }
 
+// The reason PairCallback hands out non-const leases: a callback that is done
+// reading the frames releases them itself, and the consumer's own release when
+// the callback returns has to become a no-op rather than a double drop.
+void test_callback_may_drop_leases_early() {
+  DeviceRingBuffer a = make_ring();
+  DeviceRingBuffer b = make_ring();
+  CudaStream stream;
+
+  RingPairConsumer stereo(a, b, config(), kConsumerId, 0);
+
+  int calls = 0;
+  stereo.set_pair_callback([&](ReadLease& ref, ReadLease& other, int64_t, uint64_t,
+                              cudaStream_t) {
+    ++calls;
+    ref.drop_hold();
+    other.drop_hold();
+    check(!ref.valid() && !other.valid(), "a dropped lease reports itself released");
+    ref.drop_hold();  // the guard that makes the consumer's own release safe
+  });
+
+  publish(a, stream, kPeriod);
+  publish(b, stream, kPeriod);
+  check(stereo.step(stream), "a pair whose callback released early still counts");
+  check(calls == 1, "the callback ran once");
+
+  // The real proof: the slots came back, so the rings keep producing and
+  // pairing afterwards.
+  publish(a, stream, 2 * kPeriod);
+  publish(b, stream, 2 * kPeriod);
+  check(stereo.step(stream), "and the next pair goes through");
+  check(stereo.paired() == 2 && stereo.unpaired() == 0, "both pairs counted, none lost");
+}
+
 void test_unpaired_when_partner_absent() {
   DeviceRingBuffer a = make_ring();
   DeviceRingBuffer b = make_ring();
@@ -246,6 +279,7 @@ int main() {
   }
 
   test_pairs_when_both_present();
+  test_callback_may_drop_leases_early();
   test_unpaired_when_partner_absent();
   test_moves_on_after_an_unpaired_frame();
   test_late_partner_retry();

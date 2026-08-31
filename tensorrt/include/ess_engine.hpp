@@ -51,8 +51,10 @@ class EssEngine {
   EssEngine(const EssEngine&) = delete;
   EssEngine& operator=(const EssEngine&) = delete;
 
-  void enqueue(cudaTextureObject_t left_texture, cudaTextureObject_t right_texture,
-               cudaStream_t stream);
+  void preprocess(cudaTextureObject_t left_texture, cudaTextureObject_t right_texture,
+                  cudaStream_t stream);
+
+  void infer(cudaStream_t stream);
 
   // Host path, in network pixels. Blocks until the copy retires
   const std::vector<float>& download(cudaStream_t stream);
@@ -65,7 +67,7 @@ class EssEngine {
   void draw_into(cudaSurfaceObject_t surface, cudaStream_t stream);
 
   // Device-side, row-major width() x height(), in network pixels. Overwritten
-  // by the next enqueue() cycle; confidence is null without that output.
+  // by the next infer() cycle; confidence is null without that output.
   const float* disparity_device() const { return static_cast<const float*>(disparity_device_); }
   const float* confidence_device() const { return static_cast<const float*>(confidence_device_); }
 
@@ -93,7 +95,7 @@ class EssEngine {
     double inference_ms = 0.0;   // TensorRT execution, and nothing else
     double total_ms = 0.0;       // preprocess start through the end of drawing
     bool included_draw = false;  // false means total_ms stops at inference
-    uint64_t index = 0;          // which enqueue() cycle this describes, for dedup
+    uint64_t index = 0;          // which infer() cycle this describes, for dedup
   };
 
   // Most recent cycle that has actually retired on the device, which is not the
@@ -142,6 +144,8 @@ class EssEngine {
   std::vector<float> disparity_host_;
   std::vector<float> confidence_host_;
 
+  bool preprocessed_ = false;  // preprocess() ran, infer() has not consumed it
+
   uint32_t sample_x_ = 0;
   uint32_t sample_y_ = 0;
   // Pinned, two floats per slot: disparity then confidence.
@@ -157,7 +161,7 @@ class EssEngine {
     CudaEvent infer_end{cudaEventDefault};
     CudaEvent draw_end{cudaEventDefault};
     CudaEvent sample_done;  // queried, never measured -- timing stays off
-    bool armed = false;  // enqueue() has recorded into this slot
+    bool armed = false;  // infer() has recorded into this slot
     bool drawn = false;  // ... and draw_into() closed it
     uint32_t sample_x = 0;
     uint32_t sample_y = 0;

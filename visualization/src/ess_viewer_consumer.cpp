@@ -99,20 +99,26 @@ struct EssViewerConsumer::Impl {
     // enqueues goes on `stream`, which step() has already ordered behind both
     // frames -- and nothing in it waits on the GPU, so the leases are not held
     // across a stall.
-    pairs->set_pair_callback([&](const ReadLease& reference, const ReadLease& other,
-                                 int64_t /*skew_ns*/, uint64_t /*pair_id*/, cudaStream_t s) {
+    pairs->set_pair_callback([&](ReadLease& reference, ReadLease& other, int64_t /*skew_ns*/,
+                                 uint64_t /*pair_id*/, cudaStream_t s) {
       // The pair consumer hands its own reference back first, and that is
       // streams[reference_stream]; the calibration's cameras[0] is always
       // streams[0]. Swapping the two is not something the engine can see -- it
       // is a disparity of the wrong sign that still looks like one.
-      const ReadLease& left = reference_stream == 0 ? reference : other;
-      const ReadLease& right = reference_stream == 0 ? other : reference;
+      ReadLease& left = reference_stream == 0 ? reference : other;
+      ReadLease& right = reference_stream == 0 ? other : reference;
 
-      engine->enqueue(left.texture(), right.texture(), s);
+      const uint64_t reference_timestamp_ns = reference.timestamp_ns();
+      engine->preprocess(left.texture(), right.texture(), s);
+      
+      left.drop_hold();
+      right.drop_hold();
+
+      engine->infer(s);
 
       double latency_ms = -1.0;
       int64_t age_ns = 0;
-      if (probe->age_ns(reference.timestamp_ns(), age_ns)) {
+      if (probe->age_ns(reference_timestamp_ns, age_ns)) {
         latency_ms = static_cast<double>(age_ns) * 1e-6;
       }
 

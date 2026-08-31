@@ -94,8 +94,6 @@ bool RingPairConsumer::step(cudaStream_t stream) {
 
   if (on_pair_) on_pair_(reference, other, skew_ns, pair_id, stream);
 
-  // Both leases drop here, recording read-completion against `stream`. The
-  // reading work only has to be enqueued by now, not finished.
   return true;
 }
 

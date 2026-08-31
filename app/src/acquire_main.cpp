@@ -263,14 +263,18 @@ int main(int argc, char** argv) {
           config.stereo.consumer, kRingPairConsumerId, config.pipeline.device_id);
 
       if (ess) {
-        stereo->set_pair_callback([&ess, ref_index](const perception::ReadLease& reference,
-                                                    const perception::ReadLease& other,
-                                                    int64_t skew_ns, uint64_t pair_id,
-                                                    cudaStream_t stream) {
-        const perception::ReadLease& left = ref_index == 0 ? reference : other;
-        const perception::ReadLease& right = ref_index == 0 ? other : reference;
+        stereo->set_pair_callback([&ess, ref_index](perception::ReadLease& reference,
+                                                    perception::ReadLease& other, int64_t skew_ns,
+                                                    uint64_t pair_id, cudaStream_t stream) {
+        perception::ReadLease& left = ref_index == 0 ? reference : other;
+        perception::ReadLease& right = ref_index == 0 ? other : reference;
 
-        ess->enqueue(left.texture(), right.texture(), stream);
+        ess->preprocess(left.texture(), right.texture(), stream);
+
+        left.drop_hold();
+        right.drop_hold();
+
+        ess->infer(stream);
 
         if (pair_id % 60 != 0) return;
 

@@ -195,8 +195,8 @@ void EssEngine::set_sample_pixel(uint32_t x, uint32_t y) {
   sample_y_ = y;
 }
 
-void EssEngine::enqueue(cudaTextureObject_t left_texture, cudaTextureObject_t right_texture,
-                        cudaStream_t stream) {
+void EssEngine::preprocess(cudaTextureObject_t left_texture, cudaTextureObject_t right_texture,
+                           cudaStream_t stream) {
   Timing& timing = timing_[enqueued_ % kTimingSlots];
   timing.armed = false;
   timing.drawn = false;
@@ -204,6 +204,18 @@ void EssEngine::enqueue(cudaTextureObject_t left_texture, cudaTextureObject_t ri
   cuda_error_check(cudaEventRecord(timing.pre_start, stream), "EssEngine: cudaEventRecord pre_start");
   preprocess_[0]->enqueue(left_texture, static_cast<float*>(input_device_[0]), stream);
   preprocess_[1]->enqueue(right_texture, static_cast<float*>(input_device_[1]), stream);
+  preprocessed_ = true;
+}
+
+void EssEngine::infer(cudaStream_t stream) {
+  if (!preprocessed_) {
+    throw std::runtime_error(
+        "EssEngine: infer() without a preceding preprocess() -- the input bindings still hold "
+        "the previous cycle's frames");
+  }
+  preprocessed_ = false;
+
+  Timing& timing = timing_[enqueued_ % kTimingSlots];
   cuda_error_check(cudaEventRecord(timing.infer_start, stream),
                    "EssEngine: cudaEventRecord infer_start");
   engine_->enqueue(stream);
