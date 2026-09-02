@@ -45,14 +45,14 @@ std::array<double, N> read_matrix(const YAML::Node& parent, const char* key,
   return out;
 }
 
-geometry::PinholeCameraModel read_camera(const YAML::Node& node, const std::string& where) {
-  geometry::PinholeCameraModel camera;
+utils::PinholeCameraModel read_camera(const YAML::Node& node, const std::string& where) {
+  utils::PinholeCameraModel camera;
 
-  // The file stays flat and row-major; the geometry types are built from it
+  // The file stays flat and row-major; the utils types are built from it
   // here so that this is the only place the layout is interpreted.
   // from_row_major() validates K, so a non-positive or non-finite focal is
   // refused before it can reach anything.
-  camera.intrinsics = geometry::CameraIntrinsics::from_row_major(
+  camera.intrinsics = utils::CameraIntrinsics::from_row_major(
       read_matrix<9>(node, "camera_matrix", where));
 
   // The model name is checked and dropped rather than stored: only plumb_bob
@@ -76,7 +76,7 @@ geometry::PinholeCameraModel read_camera(const YAML::Node& node, const std::stri
     raw.push_back(coefficients[i].as<double>());
   }
   try {
-    camera.distortion = geometry::CameraDistortionModel::from_coefficients(raw);
+    camera.distortion = utils::CameraDistortionModel::from_coefficients(raw);
   } catch (const std::runtime_error& e) {
     fail(where + ".distortion.coefficients", e.what());
   }
@@ -84,8 +84,8 @@ geometry::PinholeCameraModel read_camera(const YAML::Node& node, const std::stri
   return camera;
 }
 
-geometry::ImageSize read_image_size(const YAML::Node& node, const std::string& where) {
-  geometry::ImageSize size;
+utils::ImageSize read_image_size(const YAML::Node& node, const std::string& where) {
+  utils::ImageSize size;
   size.width = require_node(node, "width", where).as<uint32_t>();
   size.height = require_node(node, "height", where).as<uint32_t>();
   if (size.empty()) fail(where, "must be non-zero");
@@ -117,10 +117,10 @@ void require_distinct_roles(const YAML::Node& cameras) {
 // stereoRectify hands them back. They are read out into the pair-level type
 // here: this is the one place the file's layout is interpreted, and grouping
 // by eye is the file's business, not the calibration's.
-geometry::Rectification read_rectification(const YAML::Node& node, const std::string& where) {
+utils::Rectification read_rectification(const YAML::Node& node, const std::string& where) {
   const YAML::Node rect = require_node(node, "rectification", where);
   try {
-    return geometry::Rectification::from_row_major(
+    return utils::Rectification::from_row_major(
         read_matrix<9>(rect, "rotation", where + ".rectification"),
         read_matrix<12>(rect, "projection", where + ".rectification"));
   } catch (const std::runtime_error& e) {
@@ -151,10 +151,10 @@ std::array<CalibrationIdentity, 2> read_calibration_identity(const std::string& 
   return identity;
 }
 
-geometry::StereoCalibration load_stereo_calibration(const std::string& path) {
+utils::StereoCalibration load_stereo_calibration(const std::string& path) {
   const YAML::Node root = load_document(path);
 
-  geometry::StereoCalibration cal;
+  utils::StereoCalibration cal;
 
   cal.size = read_image_size(require_node(root, "image_size", ""), "image_size");
 
@@ -171,7 +171,7 @@ geometry::StereoCalibration load_stereo_calibration(const std::string& path) {
   // against each other is the only reason to hold them apart.
   const YAML::Node extrinsics = require_node(root, "extrinsics", "");
   try {
-    cal.extrinsics = geometry::StereoExtrinsics::from_row_major(
+    cal.extrinsics = utils::StereoExtrinsics::from_row_major(
         read_matrix<9>(extrinsics, "rotation", "extrinsics"),
         read_matrix<3>(extrinsics, "translation_m", "extrinsics"),
         require_node(root, "baseline_m", "").as<double>());
@@ -195,7 +195,7 @@ geometry::StereoCalibration load_stereo_calibration(const std::string& path) {
   cal.rectification.disparity_to_depth << q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7], q[8],
       q[9], q[10], q[11], q[12], q[13], q[14], q[15];
 
-  // Both statements the geometry types own: that the pair is internally one
+  // Both statements the utils types own: that the pair is internally one
   // stereoRectify run, and that it is the run belonging to these extrinsics. A
   // Q or a P left behind when the extrinsics were regenerated is what the
   // second catches.

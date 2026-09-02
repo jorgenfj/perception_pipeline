@@ -39,7 +39,7 @@ const TrtEngine::TensorInfo* find_named(const std::vector<const TrtEngine::Tenso
 
 }  // namespace
 
-EssEngine::EssEngine(const ImageDesc& source_desc, const geometry::StereoCalibration& calibration,
+EssEngine::EssEngine(const ImageDesc& source_desc, const utils::StereoCalibration& calibration,
                      Config config)
     : source_desc_(source_desc), config_(std::move(config)) {
   cuda_error_check(cudaSetDevice(config_.device_id), "EssEngine: cudaSetDevice");
@@ -164,7 +164,7 @@ EssEngine::EssEngine(const ImageDesc& source_desc, const geometry::StereoCalibra
   engine_->set_tensor_address(disparity_name_, disparity_device_);
   if (confidence_device_) engine_->set_tensor_address(confidence_name_, confidence_device_);
 
-  const geometry::CameraIntrinsics k = rectification_.rectified_intrinsics();
+  const utils::CameraIntrinsics k = rectification_.rectified_intrinsics();
   std::printf("ess: %s, in=%s/%s out=%s%s%s, %ux%u cropped from %ux%u (scale %.3f), fx=%.1f "
              "baseline=%.4fm, conf>=%.2f\n",
              config_.engine_path.c_str(), input_left_name_.c_str(), input_right_name_.c_str(),

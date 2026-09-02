@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <memory>
 
-#include <perception/geometry/stereo.hpp>
+#include <perception/utils/stereo.hpp>
 
 #include "display_config.hpp"
 #include "ess_config.hpp"
@@ -27,7 +27,7 @@ class EssViewerConsumer {
   // is the same index the pair consumer anchors on, needed to tell which of the
   // two leases is calibration.cameras[0].
   EssViewerConsumer(RingPairConsumer& pairs, uint32_t reference_stream, const LatencyProbe& probe,
-                    const ImageDesc& source_desc, const geometry::StereoCalibration& calibration,
+                    const ImageDesc& source_desc, const utils::StereoCalibration& calibration,
                     const DisplayConfig& display_config, const EssConfig& ess_config,
                     int device_id);
   ~EssViewerConsumer();

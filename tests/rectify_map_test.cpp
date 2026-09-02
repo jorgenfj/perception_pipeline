@@ -1,12 +1,12 @@
 // Behaviour tests for the rectification lookup map. Builds maps on the host and
 // checks their entries; the builder is plain camera maths in
-// perception_geometry, so no GPU and no CUDA build is involved.
+// perception_utils, so no GPU and no CUDA build is involved.
 //
 // The properties checked here are the ones that go wrong silently: an identity
 // camera that is not identity, a transpose in the rotation, a missing half
 // pixel, distortion applied in the wrong direction. All of them still produce a
 // plausible-looking image.
-#include <perception/geometry/stereo.hpp>
+#include <perception/utils/stereo.hpp>
 
 #include <cmath>
 #include <cstddef>
@@ -35,18 +35,18 @@ void check(bool ok, const std::string& what) {
   if (!ok) ++failures;
 }
 
-using perception::geometry::build_rectify_map;
-using perception::geometry::CameraDistortionModel;
-using perception::geometry::CameraIntrinsics;
-using perception::geometry::ImageSize;
-using perception::geometry::PinholeCameraModel;
-using perception::geometry::ResizeFit;
-using perception::geometry::resize_offset;
-using perception::geometry::resize_scale;
-using perception::geometry::Rectification;
-using perception::geometry::StereoRectification;
-using perception::geometry::rectified_to_source_pixel;
-using perception::geometry::resize_rectification;
+using perception::utils::build_rectify_map;
+using perception::utils::CameraDistortionModel;
+using perception::utils::CameraIntrinsics;
+using perception::utils::ImageSize;
+using perception::utils::PinholeCameraModel;
+using perception::utils::ResizeFit;
+using perception::utils::resize_offset;
+using perception::utils::resize_scale;
+using perception::utils::Rectification;
+using perception::utils::StereoRectification;
+using perception::utils::rectified_to_source_pixel;
+using perception::utils::resize_rectification;
 
 constexpr uint32_t kWidth = 1440;
 constexpr uint32_t kHeight = 1080;
@@ -123,7 +123,7 @@ StereoRectification shipped_rectification() {
   return rectification;
 }
 
-// Same geometry, but nothing to undo: K == P, R == I, no distortion.
+// Same utils, but nothing to undo: K == P, R == I, no distortion.
 Eye identity_camera() {
   Eye eye;
   PinholeCameraModel& cal = eye.camera;
@@ -158,7 +158,7 @@ std::size_t count_outside(const std::vector<float>& map, uint32_t source_width,
 
 // Where a pixel of the target grid sits on the calibrated one -- the inverse of
 // what resize_rectification() folds into the intrinsics, spelled out here rather than taken
-// from geometry so these checks derive it independently.
+// from utils so these checks derive it independently.
 Eigen::Vector2d to_calibrated(ImageSize source, ImageSize target, double u, double v) {
   const double scale = resize_scale(source, target, ResizeFit::Crop);
   const Eigen::Vector2d offset = resize_offset(source, target, ResizeFit::Crop);

@@ -1,11 +1,11 @@
-#include <perception/geometry/camera_model.hpp>
+#include <perception/utils/camera_model.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <format>
 #include <stdexcept>
 
-namespace perception::geometry {
+namespace perception::utils {
 
 Eigen::Vector2d
 CameraDistortionModel::undistort_normalized(const Eigen::Vector2d &point,
@@ -130,4 +130,4 @@ CameraIntrinsics resize_intrinsics(const CameraIntrinsics &intrinsics,
       offset.x(), offset.y());
 }
 
-} // namespace perception::geometry
+} // namespace perception::utils

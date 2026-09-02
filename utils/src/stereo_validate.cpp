@@ -1,11 +1,11 @@
-#include <perception/geometry/stereo.hpp>
+#include <perception/utils/stereo.hpp>
 
 #include <cmath>
 #include <format>
 #include <stdexcept>
 #include <string>
 
-namespace perception::geometry {
+namespace perception::utils {
 
 void StereoExtrinsics::validate() const {
   if (!(rotation.transpose() * rotation)
@@ -138,4 +138,4 @@ bool rectifying_rotations_agree(const StereoRectification &rectification,
       .isApprox(rectification.cameras[0].rotation, tolerance);
 }
 
-} // namespace perception::geometry
+} // namespace perception::utils

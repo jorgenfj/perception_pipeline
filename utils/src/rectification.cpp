@@ -1,11 +1,11 @@
-#include <perception/geometry/stereo.hpp>
+#include <perception/utils/stereo.hpp>
 
 #include <cstddef>
 #include <optional>
 #include <stdexcept>
 #include <vector>
 
-namespace perception::geometry {
+namespace perception::utils {
 
 std::optional<Eigen::Vector2d> rectified_to_source_pixel(
     const CameraIntrinsics &intrinsics, const CameraDistortionModel &distortion,
@@ -113,4 +113,4 @@ StereoRectification resize_rectification(const StereoRectification &stereo_rect,
   return scaled;
 }
 
-} // namespace perception::geometry
+} // namespace perception::utils

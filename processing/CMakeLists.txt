@@ -11,4 +11,4 @@ add_library(perception_processing
 
 target_include_directories(perception_processing PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
-target_link_libraries(perception_processing PUBLIC perception_core perception_geometry)
+target_link_libraries(perception_processing PUBLIC perception_core perception_utils)

@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-#include <perception/geometry/stereo.hpp>
+#include <perception/utils/stereo.hpp>
 
 #include "colorize_disparity.hpp"
 #include "cuda_util.hpp"
@@ -45,7 +45,7 @@ class EssEngine {
   };
 
 
-  EssEngine(const ImageDesc& source_desc, const geometry::StereoCalibration& calibration,
+  EssEngine(const ImageDesc& source_desc, const utils::StereoCalibration& calibration,
             Config config);
   ~EssEngine();
 
@@ -77,12 +77,12 @@ class EssEngine {
   std::size_t pixels() const { return static_cast<std::size_t>(width()) * height(); }
 
   // Restated on the network's grid
-  const geometry::StereoRectification& rectification() const { return rectification_; }
+  const utils::StereoRectification& rectification() const { return rectification_; }
 
   // A disparity in network pixels divided by this is one in calibrated pixels.
   double disparity_scale() const {
-    return geometry::resize_scale(source_rectified_, rectification_.size,
-                                  geometry::ResizeFit::Crop);
+    return utils::resize_scale(source_rectified_, rectification_.size,
+                                  utils::ResizeFit::Crop);
   }
 
   // m = fx * baseline / disparity
@@ -129,8 +129,8 @@ class EssEngine {
   std::unique_ptr<EssPreprocessTransform> preprocess_[2];
 
   // Resized onto the network's grid, and the grid it was resized from.
-  geometry::StereoRectification rectification_;
-  geometry::ImageSize source_rectified_;
+  utils::StereoRectification rectification_;
+  utils::ImageSize source_rectified_;
 
   std::unique_ptr<TrtEngine> engine_;
 

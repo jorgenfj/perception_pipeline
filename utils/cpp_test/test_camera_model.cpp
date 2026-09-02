@@ -1,24 +1,24 @@
 #include <gtest/gtest.h>
 
-#include <perception/geometry/camera_model.hpp>
-#include <perception/geometry/stereo.hpp>
+#include <perception/utils/camera_model.hpp>
+#include <perception/utils/stereo.hpp>
 
 #include <cmath>
 #include <cstdio>
 #include <stdexcept>
 #include <vector>
 
-using perception::geometry::CameraDistortionModel;
-using perception::geometry::CameraIntrinsics;
-using perception::geometry::ResizeFit;
-using perception::geometry::crop_intrinsics;
-using perception::geometry::resize_offset;
-using perception::geometry::resize_scale;
-using perception::geometry::scale_intrinsics;
-using perception::geometry::ImageSize;
-using perception::geometry::resize_intrinsics;
-using perception::geometry::Rectification;
-using perception::geometry::rectified_to_source_pixel;
+using perception::utils::CameraDistortionModel;
+using perception::utils::CameraIntrinsics;
+using perception::utils::ResizeFit;
+using perception::utils::crop_intrinsics;
+using perception::utils::resize_offset;
+using perception::utils::resize_scale;
+using perception::utils::scale_intrinsics;
+using perception::utils::ImageSize;
+using perception::utils::resize_intrinsics;
+using perception::utils::Rectification;
+using perception::utils::rectified_to_source_pixel;
 
 namespace {
 

@@ -25,7 +25,7 @@ target_compile_definitions(stereo_calibration_test
 add_test(NAME stereo_calibration_test COMMAND stereo_calibration_test)
 
 add_executable(rectify_map_test rectify_map_test.cpp)
-target_link_libraries(rectify_map_test PRIVATE perception_geometry)
+target_link_libraries(rectify_map_test PRIVATE perception_utils)
 add_test(NAME rectify_map_test COMMAND rectify_map_test)
 
 add_executable(cpu_debayer_test cpu_debayer_test.cpp)

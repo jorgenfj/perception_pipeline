@@ -61,15 +61,15 @@ if(OPENGL_DISPLAY)
   find_package(glfw3 REQUIRED)
 endif()
 
-# Before any subdirectory that registers tests -- geometry/ does, via
+# Before any subdirectory that registers tests -- utils/ does, via
 # gtest_discover_tests, and CTest only sees tests added after this point.
 if(PERCEPTION_BUILD_SMOKE OR PERCEPTION_BUILD_TESTS)
   enable_testing()
 endif()
 
 # --- the CUDA-free half -------------------------------------------------------
-# geometry first: capture's calibration types are built out of it.
-add_subdirectory(geometry)
+# utils first: capture's calibration types are built out of it.
+add_subdirectory(utils)
 add_subdirectory(capture)
 add_subdirectory(recording)
 add_subdirectory(stereo)

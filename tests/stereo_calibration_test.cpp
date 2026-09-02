@@ -24,7 +24,7 @@ void check(bool ok, const char* what) {
 using perception::CalibrationIdentity;
 using perception::load_stereo_calibration;
 using perception::read_calibration_identity;
-using perception::geometry::StereoCalibration;
+using perception::utils::StereoCalibration;
 
 // A consistent rig: 1050px focal length, 120mm baseline, so P2[3] is -126.
 const char* kGood = R"(

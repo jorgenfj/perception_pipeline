@@ -37,7 +37,7 @@ struct EssViewerConsumer::Impl {
   uint32_t reference_stream;
   const LatencyProbe* probe;
   ImageDesc desc;
-  geometry::StereoCalibration calibration;
+  utils::StereoCalibration calibration;
   DisplayConfig display_config;
   EssConfig ess_config;
   int device_id;
@@ -47,7 +47,7 @@ struct EssViewerConsumer::Impl {
   std::atomic<bool> closed{false};
 
   Impl(RingPairConsumer& pairs_ref, uint32_t reference_stream_in, const LatencyProbe& probe_ref,
-      const ImageDesc& desc_in, const geometry::StereoCalibration& calibration_in,
+      const ImageDesc& desc_in, const utils::StereoCalibration& calibration_in,
       const DisplayConfig& display_config_in, const EssConfig& ess_config_in, int device_id_in)
       : pairs(&pairs_ref),
         reference_stream(reference_stream_in),
@@ -175,7 +175,7 @@ struct EssViewerConsumer::Impl {
 
 EssViewerConsumer::EssViewerConsumer(RingPairConsumer& pairs, uint32_t reference_stream,
                                     const LatencyProbe& probe, const ImageDesc& source_desc,
-                                    const geometry::StereoCalibration& calibration,
+                                    const utils::StereoCalibration& calibration,
                                     const DisplayConfig& display_config,
                                     const EssConfig& ess_config, int device_id)
     : impl_(std::make_unique<Impl>(pairs, reference_stream, probe, source_desc, calibration,

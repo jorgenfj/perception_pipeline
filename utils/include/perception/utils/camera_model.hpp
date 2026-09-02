@@ -1,5 +1,5 @@
-#ifndef PERCEPTION_GEOMETRY_CAMERA_MODEL_HPP
-#define PERCEPTION_GEOMETRY_CAMERA_MODEL_HPP
+#ifndef PERCEPTION_UTILS_CAMERA_MODEL_HPP
+#define PERCEPTION_UTILS_CAMERA_MODEL_HPP
 
 #include <array>
 #include <cmath>
@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace perception::geometry {
+namespace perception::utils {
 
 /**
  * @brief The pixel extent of an image.
@@ -474,6 +474,6 @@ CameraIntrinsics resize_intrinsics(const CameraIntrinsics &intrinsics,
                                    ImageSize source, ImageSize target,
                                    ResizeFit fit);
 
-} // namespace perception::geometry
+} // namespace perception::utils
 
-#endif // PERCEPTION_GEOMETRY_CAMERA_MODEL_HPP
+#endif // PERCEPTION_UTILS_CAMERA_MODEL_HPP

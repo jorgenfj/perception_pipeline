@@ -1,5 +1,5 @@
-#ifndef PERCEPTION_GEOMETRY_STEREO_HPP
-#define PERCEPTION_GEOMETRY_STEREO_HPP
+#ifndef PERCEPTION_UTILS_STEREO_HPP
+#define PERCEPTION_UTILS_STEREO_HPP
 
 #include <array>
 #include <cmath>
@@ -9,9 +9,9 @@
 
 #include <eigen3/Eigen/Dense>
 
-#include <perception/geometry/camera_model.hpp>
+#include <perception/utils/camera_model.hpp>
 
-namespace perception::geometry {
+namespace perception::utils {
 
 /**
  * @brief One camera's half of a stereo rectification
@@ -318,6 +318,6 @@ Rectification resize_rectification(const Rectification &rectification,
 StereoRectification resize_rectification(const StereoRectification &stereo_rect,
                                          ImageSize target_size, ResizeFit fit);
 
-} // namespace perception::geometry
+} // namespace perception::utils
 
-#endif // PERCEPTION_GEOMETRY_STEREO_HPP
+#endif // PERCEPTION_UTILS_STEREO_HPP

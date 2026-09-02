@@ -73,7 +73,7 @@ struct AppConfig {
 
   // Loaded only when stereo.enabled and stereo.calibration_path is set.
   bool have_calibration = false;
-  geometry::StereoCalibration calibration;
+  utils::StereoCalibration calibration;
 };
 
 AppConfig load_app_config(const std::string& path);

@@ -102,7 +102,7 @@ ENV GENICAM_GENTL64_PATH=/opt/spinnaker/lib/spinnaker-gentl
 WORKDIR /workspace
 COPY CMakeLists.txt ./
 COPY cmake ./cmake
-COPY geometry ./geometry
+COPY utils ./utils
 COPY capture ./capture
 COPY recording ./recording
 COPY stereo ./stereo
