@@ -48,6 +48,11 @@ find_package(Threads REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(Spinnaker REQUIRED)
 
+# MCAP dependencies
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LZ4 REQUIRED IMPORTED_TARGET GLOBAL liblz4)
+pkg_check_modules(ZSTD REQUIRED IMPORTED_TARGET GLOBAL libzstd)
+
 if(OPENGL_DISPLAY)
   # GLVND: on Jetson the NVIDIA driver installs libOpenGL/libGLX, and LEGACY
   # would resolve to a Mesa libGL that cannot share a context with CUDA.
