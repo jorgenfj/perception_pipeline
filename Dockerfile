@@ -22,6 +22,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libglfw3-dev \
         libgl-dev \
         libglvnd-dev \
+        liblz4-dev \
+        libzstd-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # --- clangd ------------------------------------------------------------------

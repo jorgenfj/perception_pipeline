@@ -24,6 +24,9 @@ CompileFlags:
     # clang 19 knows CUDA up to 12.6 and refuses the toolkit's 12.8 without this.
     - --no-cuda-version-check
     - -I/usr/local/cuda/include
+    # Marks the parse as clangd's, never nvcc's -- see the __ldcs shim in
+    # pipeline/include/cuda_util.hpp.
+    - -D__CLANGD_CUDA_SHIM__=1
   CompilationDatabase: build
 
 Diagnostics:
