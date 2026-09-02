@@ -2,8 +2,51 @@ cmake_minimum_required(VERSION 3.22)
 
 option(PERCEPTION_WITH_CUDA "Build the GPU pipeline (off leaves the CUDA-free tools)" ON)
 
+# The architecture default has to be settled BEFORE project(), because enabling
+# the CUDA language defines CMAKE_CUDA_ARCHITECTURES itself 
+if(PERCEPTION_WITH_CUDA AND NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+  set(_wanted 87 120)
+
+  set(_nvcc "${CMAKE_CUDA_COMPILER}")
+  if(NOT _nvcc AND DEFINED ENV{CUDACXX})
+    set(_nvcc "$ENV{CUDACXX}")
+  endif()
+  if(NOT _nvcc)
+    find_program(_nvcc_program NAMES nvcc HINTS ENV CUDA_PATH PATH_SUFFIXES bin)
+    set(_nvcc "${_nvcc_program}")
+  endif()
+
+  set(_supported "")
+  if(_nvcc)
+    execute_process(COMMAND "${_nvcc}" --list-gpu-arch
+                    OUTPUT_VARIABLE _arch_list ERROR_QUIET
+                    OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE _arch_status)
+    if(_arch_status EQUAL 0)
+      string(REPLACE "\n" ";" _supported "${_arch_list}")
+    endif()
+  endif()
+
+  set(_architectures "")
+  foreach(_arch IN LISTS _wanted)
+    if(NOT _supported OR "compute_${_arch}" IN_LIST _supported)
+      list(APPEND _architectures "${_arch}-real")
+    else()
+      message(STATUS "CUDA: skipping sm_${_arch}, ${_nvcc} cannot emit it")
+    endif()
+  endforeach()
+  if(NOT _architectures)
+    message(FATAL_ERROR
+      "none of the target architectures (${_wanted}) are supported by ${_nvcc} -- "
+      "pass -DCMAKE_CUDA_ARCHITECTURES explicitly")
+  endif()
+
+  set(CMAKE_CUDA_ARCHITECTURES "${_architectures}" CACHE STRING
+      "CUDA architectures to build for")
+endif()
+
 if(PERCEPTION_WITH_CUDA)
   project(perception_pipeline LANGUAGES CXX CUDA)
+  message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 else()
   project(perception_pipeline LANGUAGES CXX)
 endif()
@@ -23,11 +66,6 @@ endif()
 if(PERCEPTION_WITH_CUDA)
   set(CMAKE_CUDA_STANDARD 17)
   set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-
-  if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    set(CMAKE_CUDA_ARCHITECTURES "87-real;120-real" CACHE STRING
-        "CUDA architectures to build for")
-  endif()
 endif()
 
 option(OPENGL_DISPLAY "Build the local GL viewers (needs GLFW and OpenGL)" ON)
