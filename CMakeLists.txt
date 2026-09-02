@@ -72,6 +72,7 @@ option(OPENGL_DISPLAY "Build the local GL viewers (needs GLFW and OpenGL)" ON)
 option(PERCEPTION_TRACE_POOL "Log camera user-buffer pool starvation as it happens" OFF)
 option(PERCEPTION_BUILD_SMOKE "Build the toolchain smoke tests" ON)
 option(PERCEPTION_BUILD_TESTS "Build the pipeline behaviour tests" ON)
+option(PERCEPTION_WITH_ROS "Build the ROS schema generator (needs a ROS 2 message tree)" OFF)
 
 set(PERCEPTION_SOURCE "spinnaker" CACHE STRING "acquire's frame source: spinnaker | recording")
 set_property(CACHE PERCEPTION_SOURCE PROPERTY STRINGS spinnaker recording)

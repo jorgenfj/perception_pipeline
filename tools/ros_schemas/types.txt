@@ -1,0 +1,12 @@
+# Message types whose ros2msg schema is generated into
+# recording/include/ros_schemas.hpp. One `<package>/msg/<Type>` per line.
+#
+# Adding a line here and rebuilding with -DPERCEPTION_WITH_ROS=ON is step one of
+# adding a message type; see the checklist in recording/include/ros_messages.hpp.
+# Dependencies are resolved automatically -- list only the types a topic carries.
+
+sensor_msgs/msg/Image
+stereo_msgs/msg/DisparityImage
+sensor_msgs/msg/Imu
+sensor_msgs/msg/MagneticField
+sensor_msgs/msg/FluidPressure
