@@ -16,6 +16,17 @@ add_executable(recording_test recording_test.cpp)
 target_link_libraries(recording_test PRIVATE perception_recording)
 add_test(NAME recording_test COMMAND recording_test)
 
+
+add_executable(cdr_writer_test cdr_writer_test.cpp)
+target_link_libraries(cdr_writer_test PRIVATE perception_recording)
+add_test(NAME cdr_writer_test COMMAND cdr_writer_test)
+
+add_executable(mcap_recorder_test mcap_recorder_test.cpp)
+target_link_libraries(mcap_recorder_test
+  PRIVATE perception_recording PkgConfig::LZ4 PkgConfig::ZSTD)
+target_include_directories(mcap_recorder_test PRIVATE "${CMAKE_SOURCE_DIR}/third_party")
+add_test(NAME mcap_recorder_test COMMAND mcap_recorder_test)
+
 # The shipped calibration is part of what this covers, so the test is told
 # where app/config/ is rather than guessing from the working directory.
 add_executable(stereo_calibration_test stereo_calibration_test.cpp)
