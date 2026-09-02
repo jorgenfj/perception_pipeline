@@ -1,133 +1,55 @@
-# Stereo calibration for the rig `acquire` drives. Loaded by
-# capture/src/stereo_calibration.cpp; see capture/include/stereo_calibration.hpp
-# for what each field means.
-#
-# NOTHING IN THIS REPO PRODUCES THESE NUMBERS. There is no OpenCV in the build
-# -- Eigen is there, but only to apply a calibration, never to solve one -- and
-# calibration is a fixed property of the rig rather than something to redo per
-# run. Generate the file offline:
-#
-#   ret, K1, D1, K2, D2, R, T, E, F = cv2.stereoCalibrate(...)
-#   R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(K1, D1, K2, D2, size, R, T,
-#                                               flags=cv2.CALIB_ZERO_DISPARITY,
-#                                               alpha=0)
-#
-# and copy the results in, row-major, in the order printed. Everything below is
-# row-major to match, so a value here can be compared against the calibration
-# script without transposing anything in your head.
-#
-# Source: recordings/recording-2026-08-26T13-36-12/calib/calibration/
-#           calibration.yaml (and the identical calibration_opencv.yml),
-#         charuco 12x9, 60mm squares / 45mm markers, DICT_5X5_100,
-#         OpenCV 4.11.0, 333 of 376 views used, solved 2026-08-26T18:00:56Z.
-#
-# What the solve reported, for whoever has to judge the depth it produces:
-#   per-camera reprojection RMS   0.117px left, 0.125px right
-#   stereo reprojection RMS       2.667px
-#   rectified row error           5.91px RMS, 11.4px p95, 19.9px max
-# The row error is the number that matters for matching: a rectified pair whose
-# correspondences sit six rows apart is not something a scanline stereo matcher
-# can use as-is. calib/rig_motion_findings.md is the write-up; the rig-
-# consistency block in the source YAML attributes ~9px of it to rotation spread
-# across views, i.e. the rig moved during capture. Treat this calibration as
-# good enough to wire against and not yet good enough to believe.
-
-# The size the calibration was solved at. Checked against the geometry the
-# cameras actually come up in: intrinsics are in pixels, so a calibration taken
-# at a different Width/Height or a different binning is not a scale factor away
-# from correct, it is simply wrong. Keep this in step with camera.features'
-# Width/Height in acquire.yaml.
 image_size:
   width: 1440
   height: 1080
 
-# In stream order -- cameras[0] is streams[0], the reference eye. The roles are
-# matched against `streams:` in acquire.yaml, so a calibration cannot be applied
-# to the wrong eye by editing one file and not the other. The serials are
-# checked the same way when acquire.yaml names them.
 cameras:
   - role: left
     serial: "23494258"
-    # K1, row-major: [fx 0 cx; 0 fy cy; 0 0 1]
-    camera_matrix: [2329.7529233353694,                0.0,  754.5022389652534,
-                                   0.0, 2329.5740433167261,  560.6093817146035,
-                                   0.0,                0.0,                1.0]
+    camera_matrix: [    2323.2401876682547,                    0.0,      748.4610292835491,
+                                       0.0,      2322.869900936776,      555.0555366089341,
+                                       0.0,                    0.0,                    1.0]
     distortion:
-      model: plumb_bob          # [k1 k2 p1 p2 k3]
-      coefficients: [-0.24410080138920398, 0.26696399429948375,
-                      8.827990083798891e-05, 2.4006501080748617e-05,
-                     -0.15345901438237441]
+      model: plumb_bob
+      coefficients: [-0.23984642211614374, 0.25184704984533596,
+                     -3.0122268932764564e-05, -0.00012407947069258815,
+                     -0.21968637423487816]
     rectification:
-      # R1: rotation taking this camera into the rectified frame.
-      #
-      # Both eyes rotate, and by nearly the same amount -- R1 is 5.526deg and
-      # R2 is 5.028deg. stereoRectify (Bouguet) splits the work two ways:
-      #
-      #   R1 = Rrect * R^(+1/2)      R2 = Rrect * R^(-1/2)
-      #
-      # Rrect is the 5.275deg common part, an in-plane roll that levels the
-      # baseline -- which sits 9.5mm out of horizontal, 5.03deg, hence the
-      # 0.0962 / 0.0876 off-diagonals. On top of it each eye carries HALF of
-      # the 0.583deg inter-camera rotation R, in opposite directions: 0.2915deg
-      # each. Halving it rather than turning one eye the full way keeps the
-      # resampling blur even across the pair instead of dumping all of it on
-      # one image.
-      #
-      # The invariant that matters, and the one to check after any edit:
-      # R2 * R == R1 -- both eyes must land in the SAME rectified orientation,
-      # or there are no shared scanlines and disparity means nothing.
-      rotation: [ 0.9953566462359332,  0.09624063867688702,  0.001698899944114407,
-                 -0.09624479980195409,  0.9953543863342791,  0.0025659532716845275,
-                 -0.0014440585296353384, -0.0027175489279068757, 0.9999952648001825]
-      # P1, row-major 3x4. The reference eye's P[3] is 0 by construction.
-      projection: [2619.5697059803665,                0.0,  745.2493591308594, 0.0,
-                                  0.0, 2619.5697059803665,  558.5332374572754, 0.0,
-                                  0.0,                0.0,                1.0, 0.0]
+      rotation: [     0.999956137826727,   0.008551882355603509,   0.003819388803427822,
+                  -0.008553558998337377,     0.9999633282353237, 0.00042286285774800856,
+                  -0.003815632466288401,   -0.00045551367753178,     0.9999926167008294]
+    
+      projection: [     2301.824466013574,                    0.0,       731.800651550293,                    0.0,
+                                      0.0,      2301.824466013574,      553.8125534057617,                    0.0,
+                                      0.0,                    0.0,                    1.0,                    0.0]
 
   - role: right
     serial: "23494259"
-    camera_matrix: [2325.7999086770888,               0.0,  735.2969373843101,
-                                   0.0, 2325.69699359287,  559.0702576161585,
-                                   0.0,               0.0,                1.0]
+    camera_matrix: [     2319.017489724923,                    0.0,      731.3593099657969,
+                                       0.0,     2318.8317054080208,      551.3144642226367,
+                                       0.0,                    0.0,                    1.0]
     distortion:
       model: plumb_bob
-      coefficients: [-0.23956893837514504, 0.21113576451839627,
-                      3.624182815897604e-05, -1.877730621643997e-05,
-                      0.09839628999662872]
+      coefficients: [-0.2335629079790455, 0.17193111779379935,
+                     -9.843512982382736e-05, -8.757327284776335e-05,
+                     0.17069988915922668]
     rectification:
-      # R2: the other half of the split described under cameras[0]. Same 5.275deg
-      # common levelling roll, the half-rotation applied the other way.
-      rotation: [ 0.9961549149424362,  0.08760449966380064,  0.0009149178556072229,
-                 -0.08760177054709829,  0.996151949769823,  -0.0026875205661547707,
-                 -0.001146836100276492, 0.0025970383969276044, 0.9999959700711417]
-      # P2[3] = -fx * baseline = -2619.5697 * 0.1087463 = -284.868.
-      projection: [2619.5697059803665,                0.0,  745.2493591308594, -284.86842219049794,
-                                  0.0, 2619.5697059803665,  558.5332374572754,                 0.0,
-                                  0.0,                0.0,                1.0,                 0.0]
+      rotation: [    0.9999849004310276,  -0.004108848285392233,  0.0036491472586834663,
+                   0.004110450575397431,       0.99999145888133, -0.00043169486522615514,
+                   -0.00364734232217689, 0.00044668798626892837,     0.9999932486591235]
+      projection: [     2301.824466013574,                    0.0,       731.800651550293,    -249.65839359998412,
+                                      0.0,      2301.824466013574,      553.8125534057617,                    0.0,
+                                      0.0,                    0.0,                    1.0,                    0.0]
 
-# The second camera's pose in the first camera's frame, straight out of
-# stereoCalibrate. Translation in metres.
-#
-# This is the run-wide average of a transform that does not hold still -- see
-# the header. Rodrigues: [-0.304, 0.017, -0.497] deg.
 extrinsics:
-  rotation: [ 0.9999622862355996,    0.008678895253704862,  0.00032075480980638674,
-             -0.008680474272847443,  0.9999482680785398,    0.005301936733629774,
-             -0.00027472326299085706, -0.00530452108151135, 0.9999858931921113]
-  translation_m: [-0.10832812664962481, -0.009526662160981015, -9.94938998438291e-05]
+  rotation: [    0.9999197968563281,    0.01266371447810007, 0.00017375389642272982,
+               -0.012663858400932844,     0.9999194455702304,   0.000853850645127732,
+              -0.0001629269789998414, -0.0008559825583626749,     0.9999996203742576]
+  translation_m: [-0.10845945359952489, 0.0004456501690836693, -0.0003957904940448332]
 
-# |translation_m|, spelled out because it is the number people actually quote
-# and check against a tape measure. Stated separately and then verified against
-# the vector above and against P2[3]: all three describe one distance, and a
-# file where they disagree has been hand-edited in one place only. A wrong
-# baseline scales every depth in the scene without ever looking wrong.
-baseline_m: 0.10874626528935477
+baseline_m: 0.10846109131525403
 
 rectification:
-  # Q from stereoRectify, row-major 4x4:
-  #   [X Y Z W]^T = Q * [u v disparity 1]^T,  depth = Z/W
-  # Q[3][2] = 1 / baseline = 9.1957.
-  disparity_to_depth: [1.0, 0.0, 0.0,               -745.2493591308594,
-                       0.0, 1.0, 0.0,               -558.5332374572754,
-                       0.0, 0.0, 0.0,               2619.5697059803665,
-                       0.0, 0.0, 9.195718099735886,                0.0]
+  disparity_to_depth: [                   1.0,                    0.0,                    0.0,      -731.800651550293,
+                                           0.0,                    1.0,                    0.0,     -553.8125534057617,
+                                           0.0,                    0.0,                    0.0,      2301.824466013574,
+                                           0.0,                    0.0,      9.219896166205727,                   -0.0]
