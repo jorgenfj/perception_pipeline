@@ -8,6 +8,7 @@
 
 #include "colorize_disparity.hpp"
 #include "cuda_util.hpp"
+#include "trt_plugins.hpp"
 
 namespace perception {
 namespace {
@@ -64,6 +65,11 @@ EssEngine::EssEngine(const ImageDesc& source_desc, const geometry::StereoCalibra
   }
   sample_x_ = kEssFullWidth / 2;
   sample_y_ = kEssFullHeight / 2;
+
+  // Before the TrtEngine: the ESS graph's fused ops come from a plugin whose
+  // creators register from static initializers, so the library has to be
+  // resident by the time the plan is deserialized.
+  load_trt_plugins(config_.plugin_path);
 
   engine_ = std::make_unique<TrtEngine>(config_.engine_path, config_.device_id);
 

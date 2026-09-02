@@ -154,6 +154,7 @@ AppConfig load_app_config(const std::string& path) {
   if (const YAML::Node ess = root["ess"]) {
     read(ess, "enabled", "ess", config.ess.enabled);
     read(ess, "engine_path", "ess", config.ess.engine_path);
+    read(ess, "plugin_path", "ess", config.ess.plugin_path);
     read(ess, "conf_threshold", "ess", config.ess.conf_threshold);
     read(ess, "display_min_disparity", "ess", config.ess.display_min_disparity);
     read(ess, "display_max_disparity", "ess", config.ess.display_max_disparity);
@@ -275,6 +276,11 @@ AppConfig load_app_config(const std::string& path) {
     }
     if (config.ess.engine_path.empty()) {
       fail("ess.engine_path", "empty, but ess.enabled is set");
+    }
+    if (config.ess.plugin_path.empty()) {
+      fail("ess.plugin_path",
+           "empty, but ess.enabled is set -- every NGC ESS export is built from fused ops that "
+           "only exist in the plugin library, and the engine will not deserialize without it");
     }
     if (!(config.ess.display_max_disparity > config.ess.display_min_disparity)) {
       fail("ess.display_max_disparity", "must be greater than ess.display_min_disparity");

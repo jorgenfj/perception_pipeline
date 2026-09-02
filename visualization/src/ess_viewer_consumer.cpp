@@ -20,6 +20,7 @@ constexpr uint64_t kReportEvery = 60;
 EssEngine::Config to_engine_config(const EssConfig& config, int device_id) {
   EssEngine::Config engine_config;
   engine_config.engine_path = config.engine_path;
+  engine_config.plugin_path = config.plugin_path;
   engine_config.normalization = config.normalization;
   engine_config.conf_threshold = config.conf_threshold;
   engine_config.colormap = config.colormap;

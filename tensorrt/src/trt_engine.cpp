@@ -65,7 +65,8 @@ TrtEngine::TrtEngine(const std::string& engine_path, int device_id) : device_id_
   if (!engine_) {
     throw std::runtime_error("TrtEngine: deserializeCudaEngine failed for '" + engine_path +
                              "' -- built for a different TensorRT version, GPU, or DLA config "
-                             "than this device?");
+                             "than this device, or a plugin the plan needs was not loaded first "
+                             "(a 'Cannot find plugin' line above means the latter)");
   }
 
   context_.reset(engine_->createExecutionContext());

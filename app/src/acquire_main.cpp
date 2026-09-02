@@ -241,6 +241,7 @@ int main(int argc, char** argv) {
     if (config.ess.enabled && stereo_enabled && !ess_in_viewer) {
       perception::EssEngine::Config ess_config;
       ess_config.engine_path = perception::resolve_next_to_exe(config.ess.engine_path);
+      ess_config.plugin_path = perception::resolve_next_to_exe(config.ess.plugin_path);
       ess_config.normalization = config.ess.normalization;
       ess_config.conf_threshold = config.ess.conf_threshold;
       ess_config.device_id = config.pipeline.device_id;
@@ -299,6 +300,7 @@ int main(int argc, char** argv) {
       if (ess_in_viewer && config.ess.enabled) {
         perception::EssConfig ess_view_config = config.ess;
         ess_view_config.engine_path = perception::resolve_next_to_exe(ess_view_config.engine_path);
+        ess_view_config.plugin_path = perception::resolve_next_to_exe(ess_view_config.plugin_path);
         ess_viewer = std::make_unique<perception::EssViewerConsumer>(
             *stereo, ref_index, reference.probe, display_desc, config.calibration, config.display,
             ess_view_config, config.pipeline.device_id);

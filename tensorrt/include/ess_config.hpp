@@ -12,6 +12,11 @@ struct EssConfig {
   bool enabled = false;
   std::string engine_path;
 
+  // The prebuilt plugin library holding the fused ops the ESS graph is built
+  // from. Loaded before the engine is deserialized; empty means the engine
+  // needs no plugins, which no NGC ESS export is.
+  std::string plugin_path;
+
   // A property of the exported engine, not a tuning knob.
   EssNormalization normalization;
 

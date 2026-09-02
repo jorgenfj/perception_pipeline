@@ -55,6 +55,7 @@ message(STATUS "TensorRT ${_trt_major}.${_trt_minor} (${TENSORRT_NVINFER_LIB})")
 
 add_library(perception_tensorrt
   src/trt_engine.cpp
+  src/trt_plugins.cpp
   src/yolo_engine.cpp
   src/ess_engine.cpp
   src/draw_detections.cu
@@ -65,4 +66,4 @@ target_include_directories(perception_tensorrt PUBLIC "${CMAKE_CURRENT_SOURCE_DI
 target_include_directories(perception_tensorrt PRIVATE "${TENSORRT_INCLUDE_DIR}")
 
 target_link_libraries(perception_tensorrt PUBLIC perception_core perception_processing)
-target_link_libraries(perception_tensorrt PRIVATE "${TENSORRT_NVINFER_LIB}")
+target_link_libraries(perception_tensorrt PRIVATE "${TENSORRT_NVINFER_LIB}" ${CMAKE_DL_LIBS})

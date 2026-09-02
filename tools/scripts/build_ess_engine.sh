@@ -173,7 +173,7 @@ if best:
 plain = [i for i in ids if i.endswith("_onnx")]
 if plain:
     sys.stderr.write("  note: NGC has no ONNX export for TensorRT " + want + "; falling back to\n"
-                     "        '" + plain[0] + "', the un-suffixed export. If trtexec fails to\n"
+                     "        \x27" + plain[0] + "\x27, the un-suffixed export. If trtexec fails to\n"
                      "        build it, there is no compatible ESS release for this TensorRT.\n")
     print(plain[0])
     sys.exit(0)
@@ -334,15 +334,15 @@ tensorrt/models is symlinked next to it at build time):
   ess:
     enabled: true
     engine_path: "models/$(basename "$OUT")"
+    plugin_path: "$PLUGIN"
 
-The plugin is NOT baked into the plan. It registers its creators through static
-initializers and exports no getCreators entry point, so --setPluginsToSerialize
-cannot embed it: whatever deserializes this engine must load
-
-  $PLUGIN
-
-before creating the TensorRT runtime (dlopen with RTLD_NOW|RTLD_GLOBAL, or
-LD_PRELOAD it). Deserialization fails without it.
+plugin_path is not optional. The plugin is NOT baked into the plan: it registers
+its creators through static initializers and exports no getCreators entry point,
+so --setPluginsToSerialize cannot embed it, and whatever deserializes this engine
+has to load the library first or the plan fails with "Cannot find plugin".
+EssEngine dlopens plugin_path (RTLD_NOW|RTLD_GLOBAL) before building its runtime,
+which is what makes the config key enough; anything else reading this engine has
+to do the same, or LD_PRELOAD it.
 
 The engine is specific to $ARCH and TensorRT ${TRT_MAJOR}.${TRT_MINOR}. Do not copy
 it to another machine -- run this script there instead.

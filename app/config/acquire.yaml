@@ -211,6 +211,17 @@ ess:
   # Relative to the executable, like yolo.engine_path.
   engine_path: "models/ess_full_fp16.engine"
 
+  # NVIDIA's prebuilt plugin library, holding the five fused ops the ESS graph
+  # is built from (FusedConcatConv3x3 x2, FusedEinsum2Softmax,
+  # FusedConcat2*Conv3x3c64 x2). It is loaded before the engine is
+  # deserialized; without it the plan fails to load with "Cannot find plugin".
+  #
+  # Not optional and not shipped in this repo -- it comes down with the model.
+  # tools/scripts/build_ess_engine.sh leaves it here, under the same cache the
+  # engine was built from, so it stays paired with the export it matches.
+  # Absolute, ~-relative, and exe-relative paths all work.
+  plugin_path: "~/.cache/perception_pipeline/ess/dnn_stereo_disparity_v4.1.0_onnx/plugins/aarch64/ess_plugins.so"
+
   # The engine's own preprocessing constants, not a tuning knob. Getting them
   # wrong does not fail -- it quietly degrades every disparity. The defaults are
   # the ImageNet statistics Isaac ROS's ESS uses; check them against whatever

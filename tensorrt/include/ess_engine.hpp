@@ -30,6 +30,7 @@ class EssEngine {
  public:
   struct Config {
     std::string engine_path;
+    std::string plugin_path;
     EssNormalization normalization;
     float conf_threshold = 0.0f;
     int device_id = 0;
