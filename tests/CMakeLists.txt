@@ -12,16 +12,21 @@ add_executable(stereo_pairer_test stereo_pairer_test.cpp)
 target_link_libraries(stereo_pairer_test PRIVATE perception_stereo)
 add_test(NAME stereo_pairer_test COMMAND stereo_pairer_test)
 
+add_executable(topic_graph_test topic_graph_test.cpp "${CMAKE_SOURCE_DIR}/app/src/topic_graph.cpp")
+target_link_libraries(topic_graph_test PRIVATE perception_core)
+target_include_directories(topic_graph_test PRIVATE "${CMAKE_SOURCE_DIR}/app/include")
+add_test(NAME topic_graph_test COMMAND topic_graph_test)
+
 add_executable(cdr_writer_test cdr_writer_test.cpp)
 target_link_libraries(cdr_writer_test PRIVATE perception_recording)
 add_test(NAME cdr_writer_test COMMAND cdr_writer_test)
 
 # The round trip, so it needs the camera library for HeapFrameSink as well.
-add_executable(mcap_replay_source_test mcap_replay_source_test.cpp)
-target_link_libraries(mcap_replay_source_test
+add_executable(mcap_player_test mcap_player_test.cpp)
+target_link_libraries(mcap_player_test
   PRIVATE perception_recording perception_camera PkgConfig::LZ4 PkgConfig::ZSTD)
-target_include_directories(mcap_replay_source_test PRIVATE "${CMAKE_SOURCE_DIR}/third_party")
-add_test(NAME mcap_replay_source_test COMMAND mcap_replay_source_test)
+target_include_directories(mcap_player_test PRIVATE "${CMAKE_SOURCE_DIR}/third_party")
+add_test(NAME mcap_player_test COMMAND mcap_player_test)
 
 add_executable(mcap_recorder_test mcap_recorder_test.cpp)
 target_link_libraries(mcap_recorder_test

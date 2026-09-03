@@ -9,7 +9,7 @@
 #include "device_ring_buffer.hpp"
 #include "display_config.hpp"
 #include "ess_config.hpp"
-#include "mcap_replay_source.hpp"
+#include "mcap_player.hpp"
 #include "stereo_calibration.hpp"
 #include "ring_pair_consumer.hpp"
 #include "types.hpp"
@@ -39,8 +39,7 @@ struct StreamConfig {
 struct StereoConfig {
   bool enabled = false;
 
-  // Which stream lease_latest() anchors on; the other is the one searched.
-  uint32_t reference_stream = 0;
+  std::string reference = "/left/image_color";
 
   // tolerance_ns / retry_attempts / retry_wait, straight through.
   RingPairConsumer::Config consumer;
@@ -61,7 +60,7 @@ const char* to_string(ViewerMode mode);
 struct AppConfig {
   CameraConfig camera;
   std::vector<StreamConfig> streams;
-  McapReplaySource::Config source;
+  McapPlayer::Config source;
   PipelineConfig pipeline;
   UploadStage::Config upload;
   StereoConfig stereo;

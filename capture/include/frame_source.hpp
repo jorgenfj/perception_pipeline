@@ -11,7 +11,7 @@ namespace perception {
 
 // Whatever is putting frames into a FrameSink, named without saying what it is:
 // a camera (spinnaker/spinnaker_source.hpp) or a recording played back at its
-// original pacing (recording/mcap_replay_source.hpp). The composing application
+// original pacing (recording/image_replay_source.hpp). The composing application
 // picks one at configure time -- see -DPERCEPTION_SOURCE and app/src/source_*.cpp.
 //
 // Nothing here is per-frame virtual. start() hands the sink over once and the

@@ -89,9 +89,9 @@ streams:
 stereo:
   enabled: true
 
-  # lease_latest() anchors on this stream; the other one is searched for the
+  # lease_latest() anchors on this ring; the other eye's is searched for the
   # partner carrying the same instant.
-  reference_stream: 0
+  reference: "/left/image_color"
 
   # Two frames whose camera timestamps are within this of each other are the
   # same instant. MUST stay strictly under half the frame period -- at or above
@@ -119,11 +119,14 @@ source:
   # The .mcap file to replay.
   recording: ""
 
-  # Which image topic feeds the pipeline. `topic` wins if set; otherwise
-  # "/<role>/image_raw" is used, and leaving both empty takes the first image
-  # topic in the file. A stereo recording holds both eyes; this replays one.
-  role: "left"
-  topic: ""
+  # Which image topics feed the GPU pipeline, in stream order: the first is
+  # stereo's reference eye, and each becomes one ingress ring. Leave the list
+  # empty to take every image topic the filters below let through, sorted by
+  # name -- which puts "/left/..." on stream 0. Naming both eyes is what makes
+  # a recorded stereo run replay as a stereo run.
+  image_topics:
+    - /left/image_raw
+    - /right/image_raw
 
   # Replay rate. Above 1.0 this is a load knob as much as a time one -- it
   # raises the frame rate the pipeline has to keep up with.
@@ -144,6 +147,28 @@ source:
   # Frames dropped here mean the pipeline is slower than the recorded rate,
   # which is a finding rather than something to tune away.
   slot_wait_ms: 500
+
+  # Skip this far into the file before the first message, and play this much
+  # from there. 0 duration runs to the end. Useful for getting to the
+  # interesting part of a long recording without waiting for it.
+  start_seconds: 0.0
+  duration_seconds: 0.0
+
+  # What to replay, by topic name. EMPTY REPLAYS EVERYTHING IN THE FILE, the
+  # way `ros2 bag play` does -- a recording should not have to be described
+  # before it can be played back. Naming topics here narrows it to those;
+  # `exclude` drops from whatever is left. A name the file does not carry stops
+  # the run rather than replaying silence.
+  #
+  # A topic nothing subscribes to is still read and counted; it just goes
+  # nowhere, which is how a file grows an IMU stream before this build has
+  # anything to do with one.
+  topics: []
+
+  # /disparity is a previous run's OUTPUT. Replaying it back in would feed the
+  # pipeline its own homework, so it is dropped here rather than by omission.
+  exclude:
+    - /disparity
 
 pipeline:
   # The ingress ring IS the camera's buffer pool on this path, so its depth has

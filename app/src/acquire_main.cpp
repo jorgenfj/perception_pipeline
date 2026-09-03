@@ -29,6 +29,7 @@
 #include "ros_messages.hpp"
 #include "headless_yolo_consumer.hpp"
 #include "ring_pair_consumer.hpp"
+#include "topic_graph.hpp"
 #include "transforms/debayer.hpp"
 #include "upload_stage.hpp"
 #include "viewer_consumer.hpp"
@@ -52,8 +53,18 @@ constexpr uint32_t kPipelineConsumerId = 0;
 constexpr uint32_t kSecondaryConsumerId = 1;
 constexpr uint32_t kRingPairConsumerId = 2;
 
-// The one topic name not derived from a camera role.
 constexpr const char* kDisparityTopic = "/disparity";
+
+// "/left/image_raw" -> "/left/image_color". The device ring holds the debayered
+// form of whatever produced the raw frames, so it is named under the same
+// namespace rather than rebuilt from the role: a replayed file may carry a
+// topic the config never mentions, and the two names have to stay together.
+std::string sibling_topic(const std::string& topic, const char* leaf) {
+  const std::size_t slash = topic.rfind('/');
+  const std::string space =
+      (slash == 0 || slash == std::string::npos) ? topic : topic.substr(0, slash);
+  return space + "/" + leaf;
+}
 
 using perception::cuda_error_check;
 
@@ -181,7 +192,8 @@ int main(int argc, char** argv) {
     if (config.stereo.enabled && !stereo_enabled) {
       std::printf(
           "stereo: disabled -- the config asks for pairing but this source opened %u stream(s).\n"
-          "        A recording build replays one stream by design; see source_recording.cpp.\n",
+          "        A replay build opens one stream per image topic it was pointed at; see\n"
+          "        source.image_topics in the config.\n",
           stream_count);
     }
 
@@ -251,6 +263,15 @@ int main(int argc, char** argv) {
       return 1;
     }
 
+    // Every buffer this run produces, under the name it produces it as. Declared
+    // before `streams` so it outlives nothing it points at, and resolved only
+    // during setup -- nothing below looks a string up on a per-frame path.
+    perception::TopicGraph graph;
+
+    // The device ring each stream's debayered frames land in, indexed the same
+    // way `streams` is, so the pairing can name the partner of its reference.
+    std::vector<std::string> colour_topics;
+
     std::vector<std::unique_ptr<StreamPipeline>> streams;
     for (uint32_t s = 0; s < stream_count; ++s) {
       auto stream = std::make_unique<StreamPipeline>();
@@ -273,7 +294,37 @@ int main(int argc, char** argv) {
       stream->upload = std::make_unique<perception::UploadStage>(
           *stream->ingress, *stream->device_ring, debayer, desc, config.upload);
 
+      const std::string frame_id = acquire_source->frame_id(s);
       streams.push_back(std::move(stream));
+
+      const std::string raw_topic = acquire_source->topic_name(s);
+
+      perception::TopicInfo raw;
+      raw.name = raw_topic;
+      raw.residency = perception::Residency::Host;
+      raw.ros_type = std::string(perception::ros_msg::schema::kImageType);
+      raw.frame_id = frame_id;
+      raw.producer = acquire_source->describe(s);
+      // The tap is the CPU fan-out, and it exists only if something asks for
+      // it: with no host-side consumer there is no ring and no copy.
+      graph.declare_image_stream(
+          std::move(raw), s, [&streams, s, geometry, desc]() -> perception::HostFrameRing& {
+            StreamPipeline& bound = *streams[s];
+            bound.tap = std::make_unique<perception::HostFrameRing>(
+                kTapConsumers + 2, geometry.buffer_bytes, desc.width, desc.height);
+            bound.ring_sink->set_tap(bound.tap.get());
+            return *bound.tap;
+          });
+
+      perception::TopicInfo colour;
+      colour.name = sibling_topic(raw_topic, "image_color");
+      colour.frame_id = frame_id;
+      colour.producer = debayer.name();
+      colour_topics.push_back(colour.name);
+      graph.declare_device_ring(std::move(colour), s,
+                                [&streams, s]() -> perception::DeviceRingBuffer& {
+                                  return *streams[s]->device_ring;
+                                });
     }
 
     struct RingUnregister {
@@ -290,6 +341,11 @@ int main(int argc, char** argv) {
     // Everything downstream of the rings hangs off the reference stream
     StreamPipeline& reference = *streams[0];
 
+    // Resolved by name once, held as a reference from here on: that is the
+    // whole contract of the graph, and it is why naming the dataflow costs
+    // nothing on a per-frame path.
+    perception::DeviceRingBuffer& reference_ring = graph.device_ring(colour_topics[0]);
+
     perception::YoloConfig yolo_config = config.yolo;
     yolo_config.engine_path = perception::resolve_next_to_exe(yolo_config.engine_path);
 
@@ -300,17 +356,17 @@ int main(int argc, char** argv) {
     switch (config.viewer_mode) {
       case perception::ViewerMode::Camera:
         camera_viewer = std::make_unique<perception::ViewerConsumer>(
-            *reference.device_ring, reference.probe, display_desc, config.display,
+            reference_ring, reference.probe, display_desc, config.display,
             kSecondaryConsumerId, config.pipeline.device_id);
         break;
       case perception::ViewerMode::Yolo:
         yolo_viewer = std::make_unique<perception::YoloViewerConsumer>(
-            *reference.device_ring, reference.probe, display_desc, config.display, yolo_config,
+            reference_ring, reference.probe, display_desc, config.display, yolo_config,
             kSecondaryConsumerId, config.pipeline.device_id);
         break;
       case perception::ViewerMode::Headless:
         headless_yolo = std::make_unique<perception::HeadlessYoloConsumer>(
-            *reference.device_ring, display_desc, yolo_config,
+            reference_ring, display_desc, yolo_config,
             perception::HeadlessYoloConsumer::OutputLocation::Host, kSecondaryConsumerId,
             config.pipeline.device_id);
         break;
@@ -340,6 +396,40 @@ int main(int argc, char** argv) {
     // network's grid. Before source->start(), which is the first moment a sink
     // is used, so the decorators below are in place by the time frames arrive.
     std::unique_ptr<perception::DownloadStage> disparity_download;
+
+    // Declared whenever there is an engine to produce it, recorded or not. The
+    // readback stage behind it is built on first resolve, so a run that nobody
+    // subscribes to still allocates no pinned pool.
+    perception::ros_msg::DisparityContext disparity_context;
+    if (ess) {
+      disparity_context.width = ess->width();
+      disparity_context.height = ess->height();
+      disparity_context.focal_length_px = static_cast<float>(ess->rectification().rectified_fx());
+      disparity_context.baseline_m = static_cast<float>(ess->rectification().baseline_m());
+      disparity_context.min_disparity = config.ess.display_min_disparity;
+      disparity_context.max_disparity = config.ess.display_max_disparity;
+
+      perception::TopicInfo disparity;
+      disparity.name = kDisparityTopic;
+      disparity.residency = perception::Residency::Host;
+      disparity.ros_type = std::string(perception::ros_msg::schema::kDisparityImageType);
+      // The disparity lives on the rectified LEFT frame, so it shares that
+      // eye's optical frame and nothing else's.
+      disparity.frame_id = graph.info(colour_topics[0]).frame_id;
+      disparity.producer = "ess";
+      graph.declare_host_plane(
+          std::move(disparity), [&]() -> perception::DownloadStage& {
+            perception::DownloadStage::Config download_config;
+            download_config.slots = config.ess.readback_slots;
+            download_config.frame_bytes = ess->pixels() * sizeof(float);
+            download_config.width = ess->width();
+            download_config.height = ess->height();
+            download_config.device_id = config.pipeline.device_id;
+            disparity_download = std::make_unique<perception::DownloadStage>(download_config);
+            return *disparity_download;
+          });
+    }
+
     if (recording_enabled) {
       // Nested, so adding a recorder knob touches neither this file nor app_config.
       perception::McapRecorder::Config recorder_config = config.recording.recorder;
@@ -350,134 +440,109 @@ int main(int argc, char** argv) {
       // Sizes the queues only, so being a factor out costs a queue depth.
       const double topic_rate_hz = config.action_sync.expected_hz;
 
-      // Every topic actually declared, checked against the config below so a
-      // name nothing produces stops the run rather than recording silence.
-      std::vector<std::string> declared;
+      for (const std::string& name : config.recording.topics) {
+        // The one case the graph cannot explain on its own: `viewer: ess` owns
+        // its own engine, so there is no disparity out here to record.
+        if (name == kDisparityTopic && !ess) {
+          throw std::runtime_error(
+              "recording.topics lists '" + name +
+              "', but nothing here produces it -- ess is not enabled, or `viewer: ess` owns the "
+              "engine. Use viewer: camera or headless to record disparity.");
+        }
 
-      for (uint32_t s = 0; s < stream_count; ++s) {
-        const std::string name = "/" + streams[s]->role + "/image_raw";
-        if (!config.recording.records(name)) continue;
+        // Every other way a listed topic can have no producer -- a typo, a
+        // camera role that does not exist -- comes back from here naming what
+        // this run actually declared. The difference is usually one character.
+        const perception::TopicInfo& info = graph.info(name);
+        if (info.residency != perception::Residency::Host) {
+          throw std::runtime_error("recording.topics lists '" + name +
+                                   "', which is device-resident. Device buffers have no wire "
+                                   "form; record the host topic they were built from.");
+        }
 
-        // No geometry here: the reservation is the type's own default and each
-        // message carries its own desc.
-        const auto topic = perception::ros_msg::add_topic<perception::ros_msg::ImageMessage>(
-            *recorder, name, topic_rate_hz);
-        declared.push_back(name);
+        if (info.ros_type == perception::ros_msg::schema::kImageType) {
+          // No geometry here: the reservation is the type's own default and each
+          // message carries its own desc.
+          const auto topic = perception::ros_msg::add_topic<perception::ros_msg::ImageMessage>(
+              *recorder, name, topic_rate_hz);
 
-        // The tap, and the recorder reading it. Built here rather than with the
-        // rest of the stream because this is what knows whether anything wants
-        // the frames on the CPU: with no consumer there is no ring and no copy.
-        streams[s]->tap = std::make_unique<perception::HostFrameRing>(
-            kTapConsumers + 2, geometry.buffer_bytes, desc.width, desc.height);
-        const uint32_t consumer = streams[s]->tap->add_consumer("recorder");
-        streams[s]->ring_sink->set_tap(streams[s]->tap.get());
+          // Resolving is what builds the tap and wires it into the frame path.
+          perception::HostFrameRing& tap = graph.host_tap(name);
+          const uint32_t consumer = tap.add_consumer("recorder");
 
-        // Everything the encode needs is captured by value -- the topic, the
-        // geometry, the frame name -- because this scope is gone long before
-        // the thread is. The frame is held for the whole encode and released as
-        // the loop turns, which costs a tap slot and nothing on the camera.
-        streams[s]->recorder_thread = std::thread(
-            [ring = streams[s]->tap.get(), consumer, sink = recorder.get(), topic, desc,
-             frame_id = streams[s]->role + "_optical"] {
-              // Null once the ring is stopped, which is how this thread exits.
-              while (const auto frame = ring->acquire_latest(consumer)) {
-                perception::ros_msg::write(
-                    *sink, topic,
-                    perception::ros_msg::ImageMessage{{frame->timestamp_ns, frame_id},
-                                                      {desc, frame->data, frame->bytes}});
-              }
-            });
+          // Everything the encode needs is captured by value -- the topic, the
+          // geometry, the frame name -- because this scope is gone long before
+          // the thread is. The frame is held for the whole encode and released
+          // as the loop turns, which costs a tap slot and nothing upstream.
+          streams.at(graph.stream_index(name))->recorder_thread = std::thread(
+              [ring = &tap, consumer, sink = recorder.get(), topic, desc,
+               frame_id = info.frame_id] {
+                // Null once the ring is stopped, which is how this thread exits.
+                while (const auto frame = ring->acquire_latest(consumer)) {
+                  perception::ros_msg::write(
+                      *sink, topic,
+                      perception::ros_msg::ImageMessage{{frame->timestamp_ns, frame_id},
+                                                        {desc, frame->data, frame->bytes}});
+                }
+              });
 
-        std::printf("recording: %s via a %u-slot host tap (%.1fMB)\n", name.c_str(),
-                    streams[s]->tap->slots(),
-                    static_cast<double>(streams[s]->tap->slots() * geometry.buffer_bytes) / 1e6);
-      }
+          std::printf("recording: %s via a %u-slot host tap (%.1fMB)\n", name.c_str(), tap.slots(),
+                      static_cast<double>(tap.slots() * geometry.buffer_bytes) / 1e6);
+        } else if (info.ros_type == perception::ros_msg::schema::kDisparityImageType) {
+          const auto topic = perception::ros_msg::add_topic<perception::ros_msg::DisparityMessage>(
+              *recorder, name, topic_rate_hz, disparity_context);
 
-      perception::ros_msg::Topic<perception::ros_msg::DisparityMessage> disparity_topic;
-      // The disparity lives on the rectified LEFT frame, so it shares that
-      // eye's optical frame and nothing else's.
-      std::string disparity_frame;
-      bool have_disparity = false;
-      if (config.recording.records(kDisparityTopic) && ess) {
-        disparity_frame = streams[0]->role + "_optical";
-        perception::ros_msg::DisparityContext disparity_context;
-        disparity_context.width = ess->width();
-        disparity_context.height = ess->height();
-        disparity_context.focal_length_px =
-            static_cast<float>(ess->rectification().rectified_fx());
-        disparity_context.baseline_m = static_cast<float>(ess->rectification().baseline_m());
-        disparity_context.min_disparity = config.ess.display_min_disparity;
-        disparity_context.max_disparity = config.ess.display_max_disparity;
+          perception::DownloadStage& download = graph.download(name);
+          // By value: this scope dies long before the stage does, and a
+          // dangling frame_id would be a corrupt field rather than a crash.
+          download.add_sink([sink = recorder.get(), topic, frame_id = info.frame_id](
+                                const std::shared_ptr<const perception::HostFrame>& frame) {
+            // Encodes on the stage's own thread and releases the frame as it
+            // returns, so the pinned slot is back before the disk sees it.
+            perception::ros_msg::write(
+                *sink, topic,
+                perception::ros_msg::DisparityMessage{{frame->timestamp_ns, frame_id},
+                                                      {frame->data, frame->bytes}});
+          });
 
-        disparity_topic = perception::ros_msg::add_topic<perception::ros_msg::DisparityMessage>(
-            *recorder, kDisparityTopic, topic_rate_hz, std::move(disparity_context));
-        declared.push_back(kDisparityTopic);
-        have_disparity = true;
-      }
-
-      // One check for every way a listed topic can have no producer: a typo, an
-      // engine that is off, a camera role that does not exist. It names what is
-      // available, because the difference is usually one character.
-      for (const std::string& wanted : config.recording.topics) {
-        if (std::find(declared.begin(), declared.end(), wanted) != declared.end()) continue;
-        std::string available;
-        for (const std::string& name : declared) available += "\n    " + name;
-        if (available.empty()) available = " (nothing)";
-        std::printf("FAILED: recording.topics lists '%s', which nothing here produces.%s%s\n",
-                    wanted.c_str(),
-                    wanted == kDisparityTopic && !ess
-                        ? " ess is not enabled here -- `viewer: ess` owns its own engine, so use "
-                          "viewer: camera or headless to record disparity."
-                        : "",
-                    ("\n  Declared:" + available).c_str());
-        return 1;
+          std::printf("recording: %s %ux%u f32, %u pinned slots (%.1fMB), fx=%.1f "
+                      "baseline=%.4fm\n",
+                      name.c_str(), disparity_context.width, disparity_context.height,
+                      config.ess.readback_slots,
+                      static_cast<double>(download.pool().pinned_bytes()) / 1e6,
+                      disparity_context.focal_length_px, disparity_context.baseline_m);
+        } else {
+          throw std::runtime_error("recording.topics lists '" + name + "', which carries '" +
+                                   info.ros_type + "'. Nothing here knows how to encode that.");
+        }
       }
 
       // After every add_topic(): start() writes no more schema or channel
       // records, and add_topic() after it throws.
       recorder->start();
-
-      if (have_disparity) {
-        perception::DownloadStage::Config download_config;
-        download_config.slots = config.ess.readback_slots;
-        download_config.frame_bytes = ess->pixels() * sizeof(float);
-        download_config.width = ess->width();
-        download_config.height = ess->height();
-        download_config.device_id = config.pipeline.device_id;
-
-        disparity_download = std::make_unique<perception::DownloadStage>(download_config);
-        // By value: disparity_topic dies with this block, and a dangling
-        // frame_id would be a corrupt field rather than a crash.
-        disparity_download->add_sink(
-            [&recorder, disparity_topic,
-             disparity_frame](const std::shared_ptr<const perception::HostFrame>& frame) {
-              // Encodes on the stage's own thread and releases the frame as it
-              // returns, so the pinned slot is back before the disk sees it.
-              perception::ros_msg::write(
-                  *recorder, disparity_topic,
-                  perception::ros_msg::DisparityMessage{{frame->timestamp_ns, disparity_frame},
-                                                        {frame->data, frame->bytes}});
-            });
-        disparity_download->start();
-        std::printf("recording: disparity %ux%u f32, %u pinned slots (%.1fMB), fx=%.1f "
-                    "baseline=%.4fm\n",
-                    disparity_topic.context.width, disparity_topic.context.height,
-                    config.ess.readback_slots,
-                    static_cast<double>(disparity_download->pool().pinned_bytes()) / 1e6,
-                    disparity_topic.context.focal_length_px, disparity_topic.context.baseline_m);
-      }
     }
+
+    // Only if something resolved it above; with no subscriber there is no
+    // stage, no pinned pool and no thread.
+    if (disparity_download) disparity_download->start();
 
     std::unique_ptr<perception::RingPairConsumer> stereo;
     // After `stereo`, so its thread -- which this one drives -- is joined
     // before the consumer it is driving goes away.
     std::unique_ptr<perception::EssViewerConsumer> ess_viewer;
     if (stereo_enabled) {
-      const uint32_t ref_index = config.stereo.reference_stream;
+      // Named rather than indexed: which eye anchors the pairing is a property
+      // of the topic, so the config says the same thing whether a camera or a
+      // recording produced it.
+      const uint32_t ref_index = graph.stream_index(config.stereo.reference);
+      if (ref_index == perception::TopicGraph::kNoStream) {
+        throw std::runtime_error("stereo.reference names '" + config.stereo.reference +
+                                 "', which belongs to no stream; it has to be one eye's ring");
+      }
       const uint32_t other_index = ref_index == 0 ? 1u : 0u;
 
       stereo = std::make_unique<perception::RingPairConsumer>(
-          *streams[ref_index]->device_ring, *streams[other_index]->device_ring,
+          graph.device_ring(config.stereo.reference), graph.device_ring(colour_topics[other_index]),
           config.stereo.consumer, kRingPairConsumerId, config.pipeline.device_id);
 
       if (ess) {
@@ -542,7 +607,7 @@ int main(int argc, char** argv) {
 
       std::printf(
           "stereo: pairing %s (reference) against %s at %luus, %u retry x %ldms, calibration %s\n",
-          streams[ref_index]->role.c_str(), streams[other_index]->role.c_str(),
+          config.stereo.reference.c_str(), colour_topics[other_index].c_str(),
           static_cast<unsigned long>(config.stereo.consumer.tolerance_ns / 1000),
           config.stereo.consumer.retry_attempts,
           static_cast<long>(config.stereo.consumer.retry_wait.count()),
@@ -588,7 +653,12 @@ int main(int argc, char** argv) {
       }
     };
 
-    perception::Reporter reporter(*reference.source, *reference.upload, *reference.device_ring,
+    // Every name this run produces, after the last of them is declared. The
+    // whole dataflow in one block, and the one place a replay run and a live
+    // run can be read side by side.
+    std::printf("%s", graph.summary().c_str());
+
+    perception::Reporter reporter(*reference.source, *reference.upload, reference_ring,
                                   reference.probe, config, ptp_status);
 
     auto any_finished = [&] {
@@ -615,17 +685,17 @@ int main(int argc, char** argv) {
       acquire_source->arm_action_sync(config.action_sync, checkers);
 
       while (!g_stop.load(std::memory_order_relaxed) && !secondary_closed() && !any_finished()) {
-        const uint64_t seen = reference.device_ring->wait_seq();
+        const uint64_t seen = reference_ring.wait_seq();
 
         perception::FramePeek peek;
-        if (!reference.device_ring->view_latest_inplace(peek) ||
+        if (!reference_ring.view_latest_inplace(peek) ||
             (peek.slot == last_slot && peek.slot_seq == last_seq)) {
-          reference.device_ring->wait_for_publish(seen);
+          reference_ring.wait_for_publish(seen);
           continue;
         }
 
         perception::ReadLease lease =
-            reference.device_ring->lease_latest(kPipelineConsumerId, consumer);
+            reference_ring.lease_latest(kPipelineConsumerId, consumer);
         if (!lease.valid()) continue;
         last_slot = lease.slot();
         last_seq = lease.seq();

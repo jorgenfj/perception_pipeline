@@ -32,6 +32,13 @@ class AcquireSource {
   // or a recording directory and which stream of it.
   virtual std::string describe(uint32_t stream) const = 0;
 
+  // The name this stream's raw frames are published under, e.g.
+  // "/left/image_raw".
+  virtual std::string topic_name(uint32_t stream) const = 0;
+
+  // The optical frame they are measured 
+  virtual std::string frame_id(uint32_t stream) const = 0;
+
   // Nanoseconds to SUBTRACT from this source's frame timestamps to put them on
   // the host's CLOCK_REALTIME epoch. Zero for a source already on it.
   //

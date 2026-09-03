@@ -114,6 +114,14 @@ class SpinnakerAcquireSource final : public AcquireSource {
     return s.role + ": " + what;
   }
 
+  std::string topic_name(uint32_t stream) const override {
+    return "/" + streams_.at(stream).role + "/image_raw";
+  }
+
+  std::string frame_id(uint32_t stream) const override {
+    return streams_.at(stream).role + "_optical";
+  }
+
   int64_t epoch_offset_ns() const override { return epoch_offset_ns_; }
 
   void arm_action_sync(const ActionSyncConfig& config,

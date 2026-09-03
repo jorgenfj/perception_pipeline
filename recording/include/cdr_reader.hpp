@@ -66,6 +66,36 @@ class CdrReader {
   }
 
   /**
+   * @brief Read a fixed-size array: no length prefix.
+   *
+   * One align() covers the run because an element's size is its alignment,
+   * which is also why there is no generic array<T> -- the mirror of
+   * CdrWriter::f64_array().
+   */
+  void f64_array(double* out, std::size_t count) { run(out, count, 8); }
+  void f32_array(float* out, std::size_t count) { run(out, count, 4); }
+
+  /**
+   * @brief Read a sequence into a buffer of known size: a uint32 count, then
+   * the elements.
+   *
+   * @return False if the file's count is not `count`. A covariance that is not
+   *         nine doubles is a message from something else, not one to guess at.
+   */
+  bool f64_seq(double* out, std::size_t count) {
+    if (u32() != count) ok_ = false;
+    if (!ok_) return false;
+    f64_array(out, count);
+    return ok_;
+  }
+  bool f32_seq(float* out, std::size_t count) {
+    if (u32() != count) ok_ = false;
+    if (!ok_) return false;
+    f32_array(out, count);
+    return ok_;
+  }
+
+  /**
    * @brief A uint8 sequence, borrowed rather than copied.
    *
    * The pixels of a 1.5MB frame, so this hands back a pointer into the message
@@ -107,6 +137,20 @@ class CdrReader {
     std::memcpy(&value, data_ + aligned, sizeof(T));
     at_ = aligned + sizeof(T);
     return value;
+  }
+
+  // A run of same-sized elements: aligned once, then contiguous, because CDR
+  // pads between elements only when their size demands it and here it cannot.
+  template <typename T>
+  void run(T* out, std::size_t count, std::size_t align) {
+    if (count == 0) return;
+    const std::size_t aligned = kOrigin + (at_ - kOrigin + align - 1) / align * align;
+    if (!ok_ || aligned + sizeof(T) * count > size_) {
+      ok_ = false;
+      return;
+    }
+    std::memcpy(out, data_ + aligned, sizeof(T) * count);
+    at_ = aligned + sizeof(T) * count;
   }
 
   static constexpr std::size_t kOrigin = 4;  // the encapsulation header

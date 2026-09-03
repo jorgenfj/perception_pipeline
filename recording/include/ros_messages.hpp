@@ -9,7 +9,9 @@
 
 #include <perception/utils/message_types.hpp>
 
+#include "cdr_reader.hpp"
 #include "cdr_writer.hpp"
+#include "mcap_player.hpp"
 #include "mcap_recorder.hpp"
 #include "ros_schemas.hpp"
 
@@ -110,6 +112,30 @@ template <Recordable M>
 bool write(McapRecorder& recorder, const Topic<M>& topic, const M& message) {
   return recorder.push(topic.id, message.header.stamp_ns,
                        [&](CdrWriter& cdr) { encode(cdr, topic, message); });
+}
+
+/**
+ * @brief std_msgs/Header, back off the wire: sec and nanosec rejoined, then the frame.
+ */
+void read_header(CdrReader& cdr, Header& out);
+
+void decode_payload(CdrReader& cdr, Imu& imu);
+void decode_payload(CdrReader& cdr, MagneticField& field);
+void decode_payload(CdrReader& cdr, FluidPressure& pressure);
+
+/**
+ * @brief Decode a replayed message into its struct.
+ *
+ * @return False if the bytes are not this message, which is a message to count
+ *         and skip rather than a run to end. A short read leaves `out` partly
+ *         filled; a caller that got false must not use it.
+ */
+template <typename Payload>
+bool decode(const ReplayMessage& message, Message<Payload>& out) {
+  CdrReader cdr(message.data, message.size);
+  read_header(cdr, out.header);
+  decode_payload(cdr, out.data);
+  return cdr.ok();
 }
 
 /**

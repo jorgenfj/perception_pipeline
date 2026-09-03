@@ -107,7 +107,7 @@ stereo:
   #
   # Set this back to 0 once both ports negotiate gigabit -- with symmetric links
   # either stream works, and 0 is the convention everywhere else.
-  reference_stream: 1
+  reference: "/right/image_color"
 
   # Must stay strictly under half the frame period -- 142857us at 3.5 Hz, so
   # this is far inside it. With per-frame triggering working, observed skew

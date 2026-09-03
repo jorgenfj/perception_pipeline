@@ -2,7 +2,8 @@ add_executable(acquire
   src/acquire_main.cpp
   src/app_config.cpp
   src/headless_yolo_consumer.cpp
-  src/report.cpp)
+  src/report.cpp
+  src/topic_graph.cpp)
 
 target_include_directories(acquire PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 

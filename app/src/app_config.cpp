@@ -1,5 +1,7 @@
 #include "app_config.hpp"
 
+#include "replay_config.hpp"
+
 #include "config_path.hpp"
 
 #include <yaml-cpp/yaml.h>
@@ -171,25 +173,9 @@ AppConfig load_app_config(const std::string& path) {
     }
   }
 
-  // Parsed by recording/, which owns the section: one parser per section, the
-  // way the camera and action_sync blocks above are handled.
   config.recording = load_recording_config(path);
 
-  // Only consulted by a -DPERCEPTION_SOURCE=recording build, but always parsed:
-  // one config file has to describe both, or switching source means editing the
-  // config as well as reconfiguring and the two versions drift apart.
-  if (const YAML::Node source = root["source"]) {
-    read(source, "recording", "source", config.source.path);
-    read(source, "role", "source", config.source.role);
-    read(source, "topic", "source", config.source.topic);
-    read(source, "speed", "source", config.source.speed);
-    read(source, "loop", "source", config.source.loop);
-    read(source, "rebase_timestamps", "source", config.source.rebase_timestamps);
-    read(source, "slot_wait_ms", "source", config.source.slot_wait_ms);
-  }
-
-  // Parsed by the camera schema, not here: stereo_view reads the same section,
-  // and two parsers for one section is how they end up disagreeing.
+  config.source = load_replay_config(path);
   config.action_sync = load_action_sync_config(path);
 
   // --- streams ---------------------------------------------------------------
@@ -218,7 +204,7 @@ AppConfig load_app_config(const std::string& path) {
   // --- stereo ----------------------------------------------------------------
   if (const YAML::Node stereo = root["stereo"]) {
     read(stereo, "enabled", "stereo", config.stereo.enabled);
-    read(stereo, "reference_stream", "stereo", config.stereo.reference_stream);
+    read(stereo, "reference", "stereo", config.stereo.reference);
     read(stereo, "calibration", "stereo", config.stereo.calibration_path);
 
     uint64_t tolerance_us = config.stereo.consumer.tolerance_ns / 1000;
@@ -238,8 +224,11 @@ AppConfig load_app_config(const std::string& path) {
            "pairing needs exactly two streams, but `streams:` declares " +
                std::to_string(config.streams.size()));
     }
-    if (config.stereo.reference_stream > 1) {
-      fail("stereo.reference_stream", "must be 0 or 1");
+    if (config.stereo.reference.empty() || config.stereo.reference.front() != '/') {
+      fail("stereo.reference",
+           "'" + config.stereo.reference +
+               "' is not a topic name -- ROS topics start with '/'. Whether it names a ring this "
+               "run actually produces is checked once the streams are declared.");
     }
     if (config.pipeline.max_consumers < 3) {
       fail("pipeline.max_consumers",

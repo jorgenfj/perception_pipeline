@@ -85,4 +85,34 @@ void encode_payload(CdrWriter& cdr, const FluidPressure& pressure, const NoConte
   cdr.f64(pressure.variance);
 }
 
+void read_header(CdrReader& cdr, Header& out) {
+  const int32_t sec = cdr.i32();
+  const uint32_t nsec = cdr.u32();
+  out.frame_id = cdr.str();
+  if (sec < 0) {
+    out.stamp_ns = 0;
+    return;
+  }
+  out.stamp_ns = static_cast<uint64_t>(sec) * 1000000000ull + nsec;
+}
+
+void decode_payload(CdrReader& cdr, Imu& imu) {
+  cdr.f64_array(imu.orientation.data(), 4);
+  cdr.f64_array(imu.orientation_covariance.data(), 9);
+  cdr.f64_array(imu.angular_velocity.data(), 3);
+  cdr.f64_array(imu.angular_velocity_covariance.data(), 9);
+  cdr.f64_array(imu.linear_acceleration.data(), 3);
+  cdr.f64_array(imu.linear_acceleration_covariance.data(), 9);
+}
+
+void decode_payload(CdrReader& cdr, MagneticField& field) {
+  cdr.f64_array(field.magnetic_field.data(), 3);
+  cdr.f64_array(field.magnetic_field_covariance.data(), 9);
+}
+
+void decode_payload(CdrReader& cdr, FluidPressure& pressure) {
+  pressure.fluid_pressure = cdr.f64();
+  pressure.variance = cdr.f64();
+}
+
 }  // namespace perception::ros_msg
