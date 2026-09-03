@@ -65,14 +65,23 @@ McapRecorder::McapRecorder(const Config& config)
 
   mcap::Metadata meta;
   meta.name = "perception";
-  meta.metadata["timestamp_epoch"] = "TAI";
-  meta.metadata["timestamp_source"] = "camera PTP clock (GevTimestamp), verbatim";
+  meta.metadata["timestamp_epoch"] = "UTC";
+  meta.metadata["timestamp_source"] =
+      config_.epoch_offset_ns != 0
+          ? "camera PTP clock (GevTimestamp), rebased from TAI to UTC on the host"
+          : "the producer's own clock, unrebased";
+  meta.metadata["epoch_offset_ns"] = std::to_string(config_.epoch_offset_ns);
   meta.metadata["note"] =
-      "log_time, publish_time and header.stamp are all the camera's own PTP clock, which counts "
-      "TAI. CLOCK_REALTIME counts UTC and is currently 37s behind.";
+      config_.epoch_offset_ns != 0
+          ? "log_time, publish_time and header.stamp are UTC. Add epoch_offset_ns to recover the "
+            "camera's raw PTP (TAI) value."
+          : "log_time, publish_time and header.stamp are whatever epoch the producer stamped in. "
+            "epoch_offset_ns is 0, so either the source was already on CLOCK_REALTIME or no TAI "
+            "offset was available to rebase it -- a camera recording with 0 here is ~37s ahead "
+            "of UTC.";
   const mcap::Status meta_status = impl_->writer.write(meta);
   if (!meta_status.ok()) {
-    std::printf("mcap: warning -- could not write the epoch metadata (%s); timestamps are TAI\n",
+    std::printf("mcap: warning -- could not write the epoch metadata (%s)\n",
                 meta_status.message.c_str());
   }
 }

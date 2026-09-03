@@ -32,6 +32,14 @@ class AcquireSource {
   // or a recording directory and which stream of it.
   virtual std::string describe(uint32_t stream) const = 0;
 
+  // Nanoseconds to SUBTRACT from this source's frame timestamps to put them on
+  // the host's CLOCK_REALTIME epoch. Zero for a source already on it.
+  //
+  // A PTP camera stamps in TAI, which is ~37s ahead of UTC. That offset has to
+  // be removed exactly once, and the source is the only thing that knows its
+  // own epoch
+  virtual int64_t epoch_offset_ns() const = 0;
+
   // A scheduled AcquisitionStart, when the config asks for one. Called after
   // start(): with TriggerMode=On/AcquisitionStart the camera delivers nothing
   // until the command fires, so BeginAcquisition has to have run first.

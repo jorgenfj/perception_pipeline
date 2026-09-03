@@ -5,7 +5,7 @@
 #include <cstdio>
 #include <stdexcept>
 
-#include "frame_sink.hpp"  // host_now_ns()
+#include "frame_sink.hpp"
 
 namespace perception {
 namespace {
@@ -50,7 +50,12 @@ void arm_action_sync(Spinnaker::SystemPtr& system, const std::vector<std::string
         "grandmaster: bring up ptp4l on the host first (see spinnaker/README.md).");
   }
 
-  const uint64_t now_ns = host_now_ns();
+  if (!ptp_timebase_ready()) {
+    std::printf("action_sync: warning -- the kernel holds no TAI offset, so the scheduled "
+                "instant is being built in UTC and the cameras will read it ~37s late. Is "
+                "phc2sys running?\n");
+  }
+  const uint64_t now_ns = ptp_now_ns();
   const uint64_t earliest_ns = now_ns + static_cast<uint64_t>(cfg.lead_time_ms * 1e6);
   const uint64_t target_ns = ((earliest_ns / 1'000'000'000ull) + 1) * 1'000'000'000ull;
 
@@ -59,8 +64,9 @@ void arm_action_sync(Spinnaker::SystemPtr& system, const std::vector<std::string
   system->SendActionCommand(cfg.device_key, cfg.group_key, cfg.group_mask, target_ns,
                             /*requestAck=*/true, &result_size, results);
 
-  std::printf("action_sync: scheduled AcquisitionStart for t=%luns (%.0fms from now)\n", target_ns,
-              static_cast<double>(target_ns - now_ns) * 1e-6);
+  std::printf("action_sync: scheduled AcquisitionStart for t=%luns TAI (%.0fms from now, "
+              "TAI-UTC=%lds)\n", target_ns, static_cast<double>(target_ns - now_ns) * 1e-6,
+              static_cast<long>(tai_offset_s()));
   for (unsigned int i = 0; i < result_size; ++i) {
     std::printf("action_sync: ack from %u.%u.%u.%u: %s\n",
                 (results[i].DeviceAddress >> 24) & 0xFFu, (results[i].DeviceAddress >> 16) & 0xFFu,

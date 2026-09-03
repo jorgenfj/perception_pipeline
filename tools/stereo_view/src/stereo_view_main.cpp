@@ -1,17 +1,14 @@
-// Stereo pair viewer and recorder, with no CUDA anywhere in the link.
 //
 //   stereo_view [options] [config.yaml]
 //
 // Two cameras -> heap buffers -> host pairing by camera timestamp -> a window
-// with both halves side by side and the pair's skew under them. Optionally,
-// every frame each camera delivered goes to disk on the way past.
+// with both halves side by side and the pair's skew under them.
 //
 // The point of it being CUDA-free is that the questions this answers -- are the
 // cameras synced, are they pointed at the same thing, is the exposure right, is
 // PTP actually locked -- are the questions you have before the GPU pipeline is
 // worth starting, and often on a machine that has no GPU in it at all. The
-// Spinnaker SDK it does need: --play and --info read a recording rather than a
-// camera, but they are options on a tool that opens cameras, not a build of it.
+// Spinnaker SDK it does need: this tool opens cameras.
 
 #include <algorithm>
 #include <atomic>
@@ -32,8 +29,6 @@
 #include "camera_config.hpp"
 #include "config_path.hpp"
 #include "cpu_debayer.hpp"
-#include "recording_reader.hpp"
-#include "recording_writer.hpp"
 #include "stereo_config.hpp"
 #include "stereo_live.hpp"
 #include "stereo_pairer.hpp"
@@ -85,12 +80,7 @@ void append_per_frame_trigger(perception::CameraConfig& camera,
 
 struct Options {
   std::string config_path;
-  std::string play;
-  std::string info;
-  bool record = false;
   bool no_display = false;
-  bool loop = false;
-  double speed = 1.0;
   uint32_t decimate = 0;   // 0 means "whatever the config says"
   uint64_t tolerance_us = 0;
   uint64_t max_pairs = 0;
@@ -103,12 +93,7 @@ void print_usage() {
   std::printf(
       "stereo_view [options] [config.yaml]\n"
       "\n"
-      "  --play DIR        replay a recording instead of opening the cameras\n"
-      "  --info DIR        print what a recording contains, then exit\n"
-      "  --record          start recording immediately (live only; r toggles)\n"
-      "  --no-display      no window -- record and report only\n"
-      "  --speed X         playback speed, default 1.0\n"
-      "  --loop            restart playback at the end\n"
+      "  --no-display      no window -- report only\n"
       "  --decimate N      Bayer block per displayed pixel: 2, 4 or 8\n"
       "  --tolerance-us N  pairing tolerance, overriding the config\n"
       "  --pairs N         stop after N pairs\n"
@@ -121,11 +106,11 @@ void print_usage() {
       "                    lock for N seconds, then exit. Run it idle, then again\n"
       "                    while streaming, to see if the traffic is what breaks it\n"
       "\n"
-      "  In the window: space pauses, r toggles recording, q or esc quits.\n");
+      "  In the window: space pauses, q or esc quits.\n");
 }
 
 // Argument parsing that reports what it did not understand rather than ignoring
-// it -- a silently dropped --record is a run you have to do twice.
+// it -- a silently dropped --capture-hz is a run you have to do twice.
 Options parse_args(int argc, char** argv) {
   Options options;
   for (int i = 1; i < argc; ++i) {
@@ -138,18 +123,8 @@ Options parse_args(int argc, char** argv) {
     if (arg == "--help" || arg == "-h") {
       print_usage();
       std::exit(0);
-    } else if (arg == "--play") {
-      options.play = value("--play");
-    } else if (arg == "--info") {
-      options.info = value("--info");
-    } else if (arg == "--record") {
-      options.record = true;
     } else if (arg == "--no-display") {
       options.no_display = true;
-    } else if (arg == "--loop") {
-      options.loop = true;
-    } else if (arg == "--speed") {
-      options.speed = std::stod(value("--speed"));
     } else if (arg == "--decimate") {
       options.decimate = static_cast<uint32_t>(std::stoul(value("--decimate")));
     } else if (arg == "--tolerance-us") {
@@ -370,191 +345,6 @@ class PtpWatch {
   std::vector<uint32_t> unlocked_runs_;
 };
 
-// The recorder, behind a switch that can be flipped mid-run.
-//
-// Each toggle starts a new directory rather than appending to the last one: a
-// recording is a session, its manifest carries the frame counts and the shared
-// epoch of that session, and there is nothing sensible to write into a manifest
-// that was already closed.
-class Recorder {
- public:
-  Recorder(const perception::StereoConfig& config, std::vector<perception::StreamInfo> streams,
-           std::vector<std::pair<std::string, std::string>> features, std::string ptp_status)
-      : config_(config),
-        streams_(std::move(streams)),
-        features_(std::move(features)),
-        ptp_status_(std::move(ptp_status)) {}
-
-  ~Recorder() { stop(); }
-
-  bool active() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return writer_ != nullptr;
-  }
-
-  void start() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (writer_) return;
-
-    perception::RecordingWriter::Config writer_config;
-    writer_config.root = config_.record_root;
-    writer_config.staging_frames = config_.staging_frames;
-
-    writer_ = std::make_shared<perception::RecordingWriter>(writer_config, streams_);
-    writer_->set_camera_features(features_);
-    writer_->set_ptp_status(ptp_status_);
-    std::printf("recording -> %s\n", writer_->directory().c_str());
-  }
-
-  void stop() {
-    std::shared_ptr<perception::RecordingWriter> writer;
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      writer = std::move(writer_);
-      writer_.reset();
-    }
-    if (!writer) return;
-    // Closed outside the lock: draining the staging rings can take as long as
-    // the disk needs, and the acquisition threads must not queue behind it.
-    writer->close();
-    std::printf("recording stopped: %s (%s)\n", writer->directory().c_str(),
-                writer->health_line().c_str());
-  }
-
-  void toggle() {
-    if (active()) {
-      stop();
-    } else {
-      start();
-    }
-  }
-
-  void push(uint32_t stream, const perception::FrameMeta& meta, const void* data) {
-    // The lock covers the pointer, not the copy: push() memcpys ~1.5 MB, and
-    // holding a shared lock across that would serialise the two acquisition
-    // threads against each other for no reason. The writer's own per-stream
-    // staging rings already keep them apart.
-    std::shared_ptr<perception::RecordingWriter> writer;
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      writer = writer_;
-    }
-    if (!writer) return;
-    writer->push(stream, meta.timestamp_ns, meta.host_recv_ns, meta.frame_id, data, meta.bytes);
-  }
-
-  std::string health_line() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return writer_ ? writer_->health_line() : std::string("rec off");
-  }
-
- private:
-  mutable std::mutex mutex_;
-  perception::StereoConfig config_;
-  std::vector<perception::StreamInfo> streams_;
-  std::vector<std::pair<std::string, std::string>> features_;
-  std::string ptp_status_;
-  std::shared_ptr<perception::RecordingWriter> writer_;
-};
-
-// Replays a recording into the pairer, paced from the manifest's shared epoch.
-//
-// It feeds the *live* matcher rather than using the offline merge, on purpose:
-// the display path is then one path, and a recording played back exercises the
-// same code that paired it live. The offline merge is still run, once, at
-// startup -- printed as the authoritative answer to compare against.
-class Playback {
- public:
-  Playback(const perception::RecordingReader& reader, perception::StereoPairer& pairer,
-           double speed, bool loop)
-      : reader_(&reader), pairer_(&pairer), speed_(speed > 0.0 ? speed : 1.0), loop_(loop) {
-    // One schedule over both streams, in timestamp order. This is not pairing:
-    // it is the order the frames would have turned up in.
-    for (std::size_t s = 0; s < reader.stream_count(); ++s) {
-      for (std::size_t i = 0; i < reader.index(s).size(); ++i) {
-        schedule_.push_back({reader.index(s)[i].timestamp_ns, static_cast<uint32_t>(s), i});
-      }
-      buffers_[s].resize(reader.stream(s).frame_bytes);
-    }
-    std::sort(schedule_.begin(), schedule_.end(),
-              [](const Item& a, const Item& b) { return a.timestamp_ns < b.timestamp_ns; });
-  }
-
-  void start() {
-    if (running_.exchange(true)) return;
-    thread_ = std::thread(&Playback::run, this);
-  }
-
-  void stop() {
-    running_.store(false);
-    if (thread_.joinable()) thread_.join();
-  }
-
-  void set_paused(bool paused) { paused_.store(paused, std::memory_order_relaxed); }
-  bool finished() const { return finished_.load(std::memory_order_relaxed); }
-
- private:
-  struct Item {
-    uint64_t timestamp_ns;
-    uint32_t stream;
-    std::size_t frame;
-  };
-
-  void run() {
-    const uint64_t epoch = reader_->manifest().epoch_ns;
-
-    do {
-      auto origin = std::chrono::steady_clock::now();
-      for (const Item& item : schedule_) {
-        if (!running_.load(std::memory_order_relaxed)) return;
-
-        // Pacing is from the frame's own offset into the recording, never from
-        // "previous frame plus a nominal period". A twenty-second dropout in
-        // the middle of a recording then replays as a twenty-second stall of
-        // exactly the right length, which is what you want when the dropout is
-        // the thing you are replaying it to look at.
-        const auto due = origin + std::chrono::nanoseconds(static_cast<int64_t>(
-                                      static_cast<double>(item.timestamp_ns - epoch) / speed_));
-        for (;;) {
-          if (!running_.load(std::memory_order_relaxed)) return;
-          if (paused_.load(std::memory_order_relaxed)) {
-            // Paused time is not playback time, so the origin slides and
-            // everything after resumes in step rather than in a burst.
-            const auto paused_at = std::chrono::steady_clock::now();
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-            origin += std::chrono::steady_clock::now() - paused_at;
-            continue;
-          }
-          const auto now = std::chrono::steady_clock::now();
-          if (now >= due) break;
-          std::this_thread::sleep_for(
-              std::min(std::chrono::duration_cast<std::chrono::nanoseconds>(due - now),
-                       std::chrono::nanoseconds(std::chrono::milliseconds(20))));
-        }
-
-        const perception::IndexRecord& record = reader_->index(item.stream)[item.frame];
-        reader_->read_frame(item.stream, item.frame, buffers_[item.stream].data());
-        pairer_->push(item.stream, record.timestamp_ns, record.host_recv_ns, record.frame_id,
-                      buffers_[item.stream].data(), record.bytes);
-      }
-    } while (loop_ && running_.load(std::memory_order_relaxed));
-
-    finished_.store(true, std::memory_order_relaxed);
-  }
-
-  const perception::RecordingReader* reader_;
-  perception::StereoPairer* pairer_;
-  double speed_;
-  bool loop_;
-  std::vector<Item> schedule_;
-  std::vector<unsigned char> buffers_[2];
-
-  std::thread thread_;
-  std::atomic<bool> running_{false};
-  std::atomic<bool> paused_{false};
-  std::atomic<bool> finished_{false};
-};
-
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -569,15 +359,6 @@ int main(int argc, char** argv) {
 
   try {
     Options options = parse_args(argc, argv);
-
-    // --info needs nothing but the recording: no config, no cameras, no window.
-    if (!options.info.empty()) {
-      const perception::RecordingReader reader(options.info);
-      const uint64_t tolerance_ns =
-          options.tolerance_us != 0 ? options.tolerance_us * 1000 : 500'000;
-      std::printf("%s", reader.info(tolerance_ns).c_str());
-      return 0;
-    }
 
     const std::string config_path =
         options.config_path.empty() ? config_file("stereo.yaml") : options.config_path;
@@ -598,7 +379,6 @@ int main(int argc, char** argv) {
     if (options.decimate != 0) config.decimate = options.decimate;
     if (options.tolerance_us != 0) config.tolerance_ns = options.tolerance_us * 1000;
     if (options.no_display) config.display = false;
-    if (options.record) config.record = true;
 
     // --ptp-watch opens the cameras and stops there: no ring, no pairer, no
     // window. Anything else on this path would put traffic on the link, which
@@ -634,12 +414,6 @@ int main(int argc, char** argv) {
       return stats.ever_locked() ? 0 : 1;
     }
 
-    const bool playing = !options.play.empty();
-    if (playing && config.record) {
-      throw std::runtime_error(
-          "--record and --play together would re-record a recording; drop one");
-    }
-
     perception::StereoPairer::Config pairer_config;
     pairer_config.tolerance_ns = config.tolerance_ns;
     pairer_config.queue_frames = config.queue_frames;
@@ -647,74 +421,29 @@ int main(int argc, char** argv) {
     perception::StereoPairer pairer(pairer_config);
 
     // --- source ---------------------------------------------------------------
-    // Both arms end up with the same three facts: the geometry to demosaic
-    // with, the pixel format, and something pushing frames into the pairer.
-    std::unique_ptr<perception::RecordingReader> reader;
-    std::unique_ptr<Playback> playback;
-    std::unique_ptr<perception::LiveStereo> live;
-    std::unique_ptr<Recorder> recorder;
+    std::unique_ptr<perception::LiveStereo> live(new perception::LiveStereo(
+        stereo_cameras(config), camera_config,
+        [&pairer](uint32_t stream, const perception::FrameMeta& meta, const void* data) {
+          pairer.push(stream, meta.timestamp_ns, meta.host_recv_ns, meta.frame_id, data,
+                      meta.bytes);
+        }));
 
-    uint32_t width = 0, height = 0, stride = 0;
-    std::string pixel_format;
+    const perception::CameraGeometry& geometry = live->geometry();
+    const uint32_t width = geometry.width;
+    const uint32_t height = geometry.height;
+    const uint32_t stride = geometry.stride_bytes;
+    const std::string pixel_format = geometry.pixel_format;
 
-    if (playing) {
-      reader.reset(new perception::RecordingReader(options.play));
-      if (reader->stream_count() != 2) {
-        throw std::runtime_error("stereo: --play needs a two-stream recording");
-      }
-      std::printf("%s", reader->info(config.tolerance_ns).c_str());
-
-      const perception::StreamInfo& info = reader->stream(0);
-      width = info.width;
-      height = info.height;
-      stride = info.stride_bytes;
-      pixel_format = info.pixel_format;
-
-      playback.reset(new Playback(*reader, pairer, options.speed, options.loop));
-    } else {
-      // The recorder taps arrival, not pairing: it writes every frame each
-      // camera delivered, and what pairs with what is a read-time question. See
-      // recording_plan.md, "What the file must not know".
-      live.reset(new perception::LiveStereo(
-          stereo_cameras(config), camera_config,
-          [&pairer, &recorder](uint32_t stream, const perception::FrameMeta& meta,
-                               const void* data) {
-            if (recorder) recorder->push(stream, meta, data);
-            pairer.push(stream, meta.timestamp_ns, meta.host_recv_ns, meta.frame_id, data,
-                        meta.bytes);
-          }));
-
-      const perception::CameraGeometry& geometry = live->geometry();
-      width = geometry.width;
-      height = geometry.height;
-      stride = geometry.stride_bytes;
-      pixel_format = geometry.pixel_format;
-
-      const std::vector<std::string> ptp_statuses = live->ptp_status();
-      std::string ptp;
-      for (const std::string& status : ptp_statuses) {
-        if (!ptp.empty()) ptp += "/";
-        ptp += status.empty() ? "unsupported" : status;
-      }
-      std::printf("cameras: %ux%u stride=%u %s, %zu bytes/frame, ptp=%s\n", geometry.width,
-                  geometry.height, geometry.stride_bytes, geometry.pixel_format.c_str(),
-                  geometry.frame_bytes, ptp.c_str());
-      std::printf("%s", ptp_verdict(ptp_statuses).c_str());
-
-      std::vector<perception::StreamInfo> streams;
-      for (uint32_t id = 0; id < 2; ++id) {
-        perception::StreamInfo info;
-        info.role = config.streams[id].role;
-        info.serial = config.streams[id].serial;
-        info.width = geometry.width;
-        info.height = geometry.height;
-        info.stride_bytes = geometry.stride_bytes;
-        info.frame_bytes = geometry.frame_bytes;
-        info.pixel_format = geometry.pixel_format;
-        streams.push_back(std::move(info));
-      }
-      recorder.reset(new Recorder(config, std::move(streams), camera_config.features, ptp));
+    const std::vector<std::string> ptp_statuses = live->ptp_status();
+    std::string ptp;
+    for (const std::string& status : ptp_statuses) {
+      if (!ptp.empty()) ptp += "/";
+      ptp += status.empty() ? "unsupported" : status;
     }
+    std::printf("cameras: %ux%u stride=%u %s, %zu bytes/frame, ptp=%s\n", geometry.width,
+                geometry.height, geometry.stride_bytes, geometry.pixel_format.c_str(),
+                geometry.frame_bytes, ptp.c_str());
+    std::printf("%s", ptp_verdict(ptp_statuses).c_str());
 
     perception::HostPixelFormat format{};
     if (!perception::host_pixel_format_from_genicam(pixel_format, format)) {
@@ -732,13 +461,10 @@ int main(int argc, char** argv) {
       view_config.vsync = config.vsync;
       view_config.skew_scale_ns = config.tolerance_ns;
       try {
-        view.reset(new perception::StereoView(playing ? "stereo :: playback" : "stereo :: live",
-                                              view_config));
-        std::printf("display: %ux%u decimate=%u (space pauses, r records, q quits)\n",
+        view.reset(new perception::StereoView("stereo :: live", view_config));
+        std::printf("display: %ux%u decimate=%u (space pauses, q quits)\n",
                     config.window_width, config.window_height, config.decimate);
       } catch (const std::exception& e) {
-        // Not fatal: pairing and recording are worth doing on a headless box,
-        // and this is the tool you would run there.
         std::printf("display: disabled (%s)\n", e.what());
       }
     }
@@ -749,9 +475,7 @@ int main(int argc, char** argv) {
 #endif
 
     // --- run ------------------------------------------------------------------
-    if (recorder && config.record) recorder->start();
-    if (live) live->start();
-    if (playback) playback->start();
+    live->start();
 
     // A scheduled AcquisitionStart, if the config asked for one. Armed after
     // start(): with TriggerMode=On/AcquisitionStart the cameras deliver nothing
@@ -776,21 +500,30 @@ int main(int argc, char** argv) {
     std::atomic<uint64_t> trig_failed{0};
     std::thread trigger_thread;
     if (live && options.capture_hz > 0.0) {
-      std::printf("capture: per-frame scheduled triggers at %.1f Hz\n", options.capture_hz);
+      std::printf("capture: per-frame scheduled triggers at %.1f Hz (TAI-UTC=%lds)\n",
+                  options.capture_hz, static_cast<long>(perception::tai_offset_s()));
       if (!live->wait_for_ptp_slave(std::chrono::milliseconds(action_sync_config.ptp_wait_ms))) {
         std::printf("capture: PTP not locked -- triggers will NO_REF_TIME until it locks\n");
+      }
+      if (!perception::ptp_timebase_ready()) {
+        std::printf("capture: warning -- the kernel holds no TAI offset, so triggers are being "
+                    "scheduled in UTC and every one will come back ACTION_LATE. Is phc2sys "
+                    "running?\n");
       }
       trigger_thread = std::thread([&] {
         const uint64_t period_ns = static_cast<uint64_t>(1e9 / options.capture_hz);
         const uint64_t lead_ns = 100'000'000ull;  // schedule each trigger 100 ms ahead
-        uint64_t target = perception::host_now_ns() + lead_ns;
+        // PTP (TAI) throughout -- target and sleep alike. The camera judges the
+        // scheduled instant against its own PTP clock, and host_now_ns() is UTC,
+        // so building the target from it puts every command ~37 s in the past.
+        uint64_t target = perception::ptp_now_ns() + lead_ns;
         while (trig_run.load(std::memory_order_relaxed) && !g_stop) {
           if (!live->send_trigger(action_sync_config, target))
             trig_failed.fetch_add(1, std::memory_order_relaxed);
           trig_sent.fetch_add(1, std::memory_order_relaxed);
           target += period_ns;
           const int64_t wake = static_cast<int64_t>(target) - static_cast<int64_t>(lead_ns);
-          const int64_t d = wake - static_cast<int64_t>(perception::host_now_ns());
+          const int64_t d = wake - static_cast<int64_t>(perception::ptp_now_ns());
           if (d > 0) std::this_thread::sleep_for(std::chrono::nanoseconds(d));
         }
       });
@@ -808,7 +541,6 @@ int main(int argc, char** argv) {
         std::printf("stereo: a camera gave up, stopping\n");
         break;
       }
-      if (playback && playback->finished()) break;
       if (options.max_pairs != 0 && pairs >= options.max_pairs) break;
 
 #ifdef OPENGL_DISPLAY
@@ -820,10 +552,8 @@ int main(int argc, char** argv) {
         if (view->should_close()) break;
         if (view->take_pause_pressed()) {
           paused = !paused;
-          if (playback) playback->set_paused(paused);
           std::printf("%s\n", paused ? "paused" : "running");
         }
-        if (view->take_record_pressed() && recorder) recorder->toggle();
       } else {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
       }
@@ -850,7 +580,6 @@ int main(int argc, char** argv) {
           status.have[0] = pair.have[0];
           status.have[1] = pair.have[1];
           status.skew_ns = pair.skew_ns;
-          status.recording = recorder && recorder->active();
           status.paused = paused;
           view->present(image[0], image[1], status);
         }
@@ -898,7 +627,6 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long>(trig_failed.load()));
           line += trig;
         }
-        if (recorder && recorder->active()) line += " | " + recorder->health_line();
         std::printf("%s\n", line.c_str());
         std::fflush(stdout);
       }
@@ -909,9 +637,7 @@ int main(int argc, char** argv) {
     trig_run.store(false, std::memory_order_relaxed);
     if (trigger_thread.joinable()) trigger_thread.join();
 
-    if (playback) playback->stop();
     if (live) live->stop();
-    if (recorder) recorder->stop();
 
     std::printf("\n%s\n", pairer.health_line().c_str());
     if (live) std::printf("%s\n", live->health_line().c_str());
@@ -974,8 +700,7 @@ int main(int argc, char** argv) {
           "other. Either the clocks share no epoch (check ptp above -- Master/Master means\n"
           "they do not), or they do share one and the cameras are simply exposing at\n"
           "different times, which a scheduled start fixes and a wider tolerance only\n"
-          "hides. --info on a recording of this run reports which, by re-pairing it at a\n"
-          "tolerance you choose.\n",
+          "hides. --sync-start, or --capture-hz for every frame, is the way to tell.\n",
           static_cast<unsigned long>(config.tolerance_ns / 1000));
       return 1;
     }

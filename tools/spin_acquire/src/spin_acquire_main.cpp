@@ -8,9 +8,6 @@
 // viable at all: does this camera accept user-owned buffers with the configured
 // stream mode, does it actually fill them, and does the config apply cleanly.
 //
-// With --record it also writes what the camera delivered, in the format
-// recording/ reads -- so a single camera can be captured on a box with no GPU
-// and replayed through the whole pipeline later (-DPERCEPTION_SOURCE=recording).
 
 #include <Spinnaker.h>
 
@@ -26,7 +23,6 @@
 #include "camera_config.hpp"
 #include "config_path.hpp"
 #include "heap_frame_sink.hpp"
-#include "recording_writer.hpp"
 #include "spinnaker_source.hpp"
 
 namespace {
@@ -46,7 +42,6 @@ std::string config_file(const char* name) {
 
 struct Options {
   std::string config_path;
-  bool record = false;
   uint64_t max_frames = 0;  // 0 means "whatever the config says"
 };
 
@@ -54,12 +49,9 @@ void print_usage() {
   std::printf(
       "spin_acquire [options] [config.yaml]\n"
       "\n"
-      "  --record      write every delivered frame to a recording\n"
       "  --frames N    stop after N frames, overriding standalone.max_frames\n");
 }
 
-// Unknown arguments are reported rather than ignored: a silently dropped
-// --record is a run you have to do twice.
 Options parse_args(int argc, char** argv) {
   Options options;
   for (int i = 1; i < argc; ++i) {
@@ -67,8 +59,6 @@ Options parse_args(int argc, char** argv) {
     if (arg == "--help" || arg == "-h") {
       print_usage();
       std::exit(0);
-    } else if (arg == "--record") {
-      options.record = true;
     } else if (arg == "--frames") {
       if (i + 1 >= argc) throw std::runtime_error("--frames needs a value");
       options.max_frames = std::stoull(argv[++i]);
@@ -81,22 +71,6 @@ Options parse_args(int argc, char** argv) {
     }
   }
   return options;
-}
-
-// The single stream this tool records, described for the manifest. Everything
-// else -- the id, the file names, the padded stride -- RecordingWriter fills in.
-perception::StreamInfo stream_info(const perception::CameraGeometry& geometry,
-                                   const perception::StandaloneConfig& standalone,
-                                   const std::string& serial) {
-  perception::StreamInfo info;
-  info.role = standalone.record_role;
-  info.serial = serial;
-  info.width = geometry.width;
-  info.height = geometry.height;
-  info.stride_bytes = geometry.stride_bytes;
-  info.frame_bytes = geometry.frame_bytes;
-  info.pixel_format = geometry.pixel_format;
-  return info;
 }
 
 }  // namespace
@@ -124,7 +98,6 @@ int main(int argc, char** argv) {
 
     const perception::CameraConfig camera_config = perception::load_camera_config(config_path);
     perception::StandaloneConfig standalone = perception::load_standalone_config(config_path);
-    if (options.record) standalone.record = true;
     if (options.max_frames != 0) standalone.max_frames = options.max_frames;
     std::printf("config: %s\n", config_path.c_str());
 
@@ -141,24 +114,6 @@ int main(int argc, char** argv) {
       throw std::runtime_error("standalone.buffer_count is below what this stream mode needs");
     }
 
-    // Opened before acquisition starts, so the very first frame has somewhere
-    // to go. The manifest is written at close(), because it carries the frame
-    // count and the epoch, neither of which is known until then.
-    std::unique_ptr<perception::RecordingWriter> writer;
-    if (standalone.record) {
-      perception::RecordingWriter::Config writer_config;
-      writer_config.root = standalone.record_root;
-      writer_config.staging_frames = standalone.staging_frames;
-
-      writer = std::make_unique<perception::RecordingWriter>(
-          writer_config,
-          std::vector<perception::StreamInfo>{
-              stream_info(geometry, standalone, camera_config.serial)});
-      writer->set_camera_features(camera_config.features);
-      writer->set_ptp_status(source.ptp_status());
-      std::printf("recording -> %s\n", writer->directory().c_str());
-    }
-
     perception::HeapFrameSink sink(standalone.buffer_count, geometry.buffer_bytes);
     source.start(sink);
 
@@ -168,15 +123,6 @@ int main(int argc, char** argv) {
         perception::HeapFrameSink::Frame frame;
         if (!sink.pop(frame, std::chrono::milliseconds(100))) continue;
 
-        // A real reader would work on frame.data here. Without a recorder the
-        // slot goes straight back, so the camera never waits on us and the
-        // measurement stays isolated to the transport; push() adds one memcpy
-        // into the writer's staging ring and never touches the disk on this
-        // thread, which is the smallest hold recording can cost.
-        if (writer) {
-          writer->push(0, frame.meta.timestamp_ns, frame.meta.host_recv_ns, frame.meta.frame_id,
-                       frame.data, frame.meta.bytes);
-        }
         sink.release(frame.slot);
         ++consumed;
 
@@ -186,7 +132,6 @@ int main(int argc, char** argv) {
                       frame.meta.timestamp_ns, frame.slot, frame.meta.bytes, source.delivered(),
                       consumed,
                       source.incomplete(), source.foreign(), source.timeouts());
-          if (writer) std::printf(" | %s", writer->health_line().c_str());
           std::printf("\n");
         }
       }
@@ -198,14 +143,6 @@ int main(int argc, char** argv) {
 
     source.stop();
     sink.stop();
-
-    // After the camera has stopped, so nothing is still being pushed while the
-    // staging rings drain.
-    if (writer) {
-      writer->close();
-      std::printf("\nrecording: %s (%s)\n", writer->directory().c_str(),
-                  writer->health_line().c_str());
-    }
 
     std::printf("\ndelivered=%lu consumed=%lu incomplete=%lu foreign=%lu timeouts=%lu\n",
                 source.delivered(), consumed, source.incomplete(), source.foreign(),
@@ -223,20 +160,6 @@ int main(int argc, char** argv) {
       status = 1;
     } else {
       std::printf("\nzero-copy confirmed: every frame landed in a user buffer\n");
-    }
-
-    // A recording that dropped frames is still a valid recording -- the gaps are
-    // visible in the index -- but it is not the clean capture that was asked
-    // for, and saying so beats finding out at playback.
-    if (writer && writer->stream(0).drops() > 0) {
-      std::printf("\nRECORDING INCOMPLETE: %lu frames were dropped before reaching the disk. "
-                  "The disk could not keep up; see staging_peak and write_max above.\n",
-                  writer->stream(0).drops());
-      status = 1;
-    }
-    if (writer && !writer->stream(0).error().empty()) {
-      std::printf("\nRECORDING FAILED: %s\n", writer->stream(0).error().c_str());
-      status = 1;
     }
   } catch (const std::exception& e) {
     std::printf("FAILED: %s\n", e.what());

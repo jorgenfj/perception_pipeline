@@ -63,6 +63,13 @@ class McapRecorder {
      * are readable, so this bounds what a crash costs. Page cache, not fsync.
      */
     double flush_seconds = 2.0;
+
+    /**
+     * Provenance only: what the pipeline already subtracted from the sensor
+     * clock to put these stamps on CLOCK_REALTIME, written into the file's
+     * metadata.
+     */
+    int64_t epoch_offset_ns = 0;
   };
 
   /** One channel's declaration. ros_messages.hpp fills these from a type's traits. */

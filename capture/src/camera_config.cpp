@@ -138,10 +138,6 @@ StandaloneConfig load_standalone_config(const std::string& path) {
 
   read(standalone, "buffer_count", "standalone", config.buffer_count);
   read(standalone, "max_frames", "standalone", config.max_frames);
-  read(standalone, "record", "standalone", config.record);
-  read(standalone, "record_root", "standalone", config.record_root);
-  read(standalone, "staging_frames", "standalone", config.staging_frames);
-  read(standalone, "record_role", "standalone", config.record_role);
   return config;
 }
 

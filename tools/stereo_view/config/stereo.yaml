@@ -2,7 +2,7 @@
 #
 # It reads four sections: `camera:` (the same schema camera.yaml and the
 # pipeline app use, applied to BOTH cameras), plus `streams:`, `stereo:` and
-# `recording:` below. One file, because exposure, gain, geometry and PTP are
+# One file, because exposure, gain, geometry and PTP are
 # rig-wide settings -- two cameras configured differently are not a stereo pair,
 # and the only thing that legitimately differs between them is the serial.
 
@@ -63,27 +63,6 @@ stereo:
   # stereo_view says so if it is not.
   buffer_count: 8
 
-recording:
-  # Off by default: this is a viewer that can record, not a recorder with a
-  # preview. `r` in the window toggles it, or start with --record.
-  enabled: false
-
-  # A timestamped subdirectory is created in here per recording session.
-  #
-  # Every frame each camera delivered is written -- there is no pairs-only mode,
-  # deliberately. Pairing is a read-time merge over the camera timestamps, so
-  # the frames a gate would have discarded are exactly the evidence you need
-  # when a recording turns out to be about something other than what you were
-  # recording it for. See recording_plan.md.
-  root: recordings
-
-  # Depth of the per-stream staging ring, in frames. ~50 MB per stream at
-  # 1440x1080 Bayer8. Frames are copied into it and the camera buffer is
-  # released immediately, so a slow disk drops the recorder's own frames and
-  # counts them rather than throttling acquisition -- which would change the
-  # timing of the run being recorded.
-  staging_frames: 32
-
 # Applied to both cameras, in order, before acquisition starts. This is the same
 # `camera:` schema as camera.yaml -- see that file for what each key does.
 camera:
@@ -100,18 +79,19 @@ camera:
     - OffsetY: 0
 
     - ExposureAuto: "Off"
-    - ExposureTime: 1000.0     # microseconds
+    - ExposureTime: 3000.0     # microseconds
 
     - GainAuto: "Off"
     - Gain: 0.0
 
     - AcquisitionFrameRateEnable: true
-    - AcquisitionFrameRate: 7.5
+    - AcquisitionFrameRate: 3.5
 
     # PTP is what makes any of this mean anything: without a common epoch the
     # two cameras' timestamps are unrelated counters and nothing will pair. See
     # spinnaker/README.md for putting the host on the network as grandmaster.
     - GevIEEE1588: "true"
+    - GevSCPSPacketSize: "9000"
 
     # SlaveOnly, not Auto. On Auto the camera runs the Best Master Clock
     # election and will elect ITSELF master the moment it stops hearing

@@ -62,17 +62,3 @@ camera:
 standalone:
   buffer_count: 8
   max_frames: 0     # 0 runs until interrupted
-
-  # Write every delivered frame to a recording, in the format recording/ reads.
-  # --record on the command line turns this on for one run.
-  #
-  # The recorder copies out of the camera buffer and never blocks on the disk:
-  # a disk that cannot keep up drops frames rather than slowing the camera, and
-  # the drop count is in the health line. See recording_plan.md.
-  record: false
-  record_root: "recordings"
-  staging_frames: 32
-
-  # The manifest's role for this single stream, and what `source.role` matches
-  # on playback. Set it to left or right when recording one eye of a rig.
-  record_role: "mono"

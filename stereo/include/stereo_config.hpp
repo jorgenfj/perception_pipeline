@@ -40,12 +40,6 @@ struct StereoConfig {
   // Camera buffers per stream. Must be at least what the stream mode needs.
   uint32_t buffer_count = 8;
 
-  // Recording. Off by default: this is a viewer that can record, not a
-  // recorder with a preview.
-  bool record = false;
-  std::string record_root = "recordings";
-  uint32_t staging_frames = 32;
-
   std::vector<StereoStreamConfig> streams;
 };
 

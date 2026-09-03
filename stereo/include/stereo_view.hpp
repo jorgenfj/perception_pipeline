@@ -38,13 +38,11 @@ class StereoView {
   struct Status {
     bool have[2] = {false, false};  // false dims that half and flags it stale
     int64_t skew_ns = 0;
-    bool recording = false;
     bool paused = false;
   };
 
   // Throws if there is no display -- a headless box, or SSH with no forwarding.
-  // The caller decides whether that is fatal; for this tool it usually is, and
-  // for the recorder it is not.
+  // The caller decides whether that is fatal; --no-display says it is not.
   StereoView(const std::string& title, const Config& config);
   ~StereoView();
 
@@ -57,10 +55,9 @@ class StereoView {
 
   bool should_close() const;
 
-  // True once, per press, for keys the caller acts on: space toggles pause, r
-  // toggles recording. Edge-detected here so the caller does not have to.
+  // True once, per press, for keys the caller acts on: space toggles pause.
+  // Edge-detected here so the caller does not have to.
   bool take_pause_pressed();
-  bool take_record_pressed();
 
   // Upload whatever is present and draw. Either side may be empty, which leaves
   // that half showing its previous frame -- dimmed, if Status says it is stale.
@@ -81,7 +78,6 @@ class StereoView {
   uint32_t tex_height_[2] = {0, 0};
 
   bool pause_was_down_ = false;
-  bool record_was_down_ = false;
   uint64_t presented_ = 0;
 };
 

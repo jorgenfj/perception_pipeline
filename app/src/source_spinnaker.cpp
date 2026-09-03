@@ -11,7 +11,7 @@
 
 #include "acquire_source.hpp"
 #include "action_sync.hpp"
-#include "frame_sink.hpp"  // host_now_ns()
+#include "frame_sink.hpp"
 #include "spinnaker_source.hpp"
 
 namespace perception {
@@ -39,7 +39,9 @@ void append_frame_trigger_features(CameraConfig& camera, const ActionSyncConfig&
 class SpinnakerAcquireSource final : public AcquireSource {
  public:
   explicit SpinnakerAcquireSource(const AppConfig& config)
-      : system_(Spinnaker::System::GetInstance()), cameras_(system_->GetCameras()) {
+      : system_(Spinnaker::System::GetInstance()),
+        cameras_(system_->GetCameras()),
+        epoch_offset_ns_(ptp_timebase_ready() ? tai_offset_s() * 1'000'000'000ll : 0) {
     if (config.streams.empty()) throw std::runtime_error("no streams configured");
 
     std::vector<Spinnaker::CameraPtr> selected;
@@ -67,6 +69,16 @@ class SpinnakerAcquireSource final : public AcquireSource {
       }
       streams_.push_back(Stream{config.streams[s].role, config.streams[s].serial,
                                 std::make_unique<SpinnakerSource>(selected[s], camera)});
+    }
+
+    if (epoch_offset_ns_ != 0) {
+      std::printf("clock: camera stamps are TAI; the pipeline rebases them to UTC by %lds\n",
+                  static_cast<long>(epoch_offset_ns_ / 1'000'000'000ll));
+    } else {
+      std::printf(
+          "clock: warning -- the kernel holds no TAI offset, so camera stamps cannot be\n"
+          "       rebased and everything recorded will be ~37s ahead of UTC. Is phc2sys "
+          "running?\n");
     }
 
     for (std::size_t s = 1; s < streams_.size(); ++s) {
@@ -102,6 +114,8 @@ class SpinnakerAcquireSource final : public AcquireSource {
     return s.role + ": " + what;
   }
 
+  int64_t epoch_offset_ns() const override { return epoch_offset_ns_; }
+
   void arm_action_sync(const ActionSyncConfig& config,
                        const std::vector<ActionSyncChecker*>& checkers) override {
     if (!config.enabled) return;
@@ -115,7 +129,7 @@ class SpinnakerAcquireSource final : public AcquireSource {
     for (const Stream& s : streams_) ptp.push_back(s.source->ptp_status());
 
     perception::arm_action_sync(system_, ptp, config, *checkers.at(0));
-    propagate_checkers(checkers);
+    finish_arming(checkers);
   }
 
   void stop_action_sync() override {
@@ -135,10 +149,10 @@ class SpinnakerAcquireSource final : public AcquireSource {
   }
 
  private:
-  // Copies the arming result onto every other stream's checker and labels them.
-  // One broadcast covers the rig, so the schedule is shared; only the label and
-  // the frames each one sees differ.
-  void propagate_checkers(const std::vector<ActionSyncChecker*>& checkers) {
+  void finish_arming(const std::vector<ActionSyncChecker*>& checkers) {
+    ActionSyncChecker& first = *checkers.at(0);
+    first.target_ns = static_cast<uint64_t>(static_cast<int64_t>(first.target_ns) -
+                                            epoch_offset_ns_);
     checkers.at(0)->label = streams_[0].role;
     for (std::size_t s = 1; s < checkers.size() && s < streams_.size(); ++s) {
       ActionSyncChecker& other = *checkers[s];
@@ -245,7 +259,12 @@ class SpinnakerAcquireSource final : public AcquireSource {
 
     const uint64_t period_ns = static_cast<uint64_t>(1e9 / hz);
     const uint64_t lead_ns = static_cast<uint64_t>(config.trigger_lead_ms * 1e6);
-    const uint64_t first_target = host_now_ns() + lead_ns;
+    if (!ptp_timebase_ready()) {
+      std::printf("action_sync: warning -- the kernel holds no TAI offset, so triggers are being "
+                  "scheduled in UTC and every one will come back ACTION_LATE. Is phc2sys "
+                  "running?\n");
+    }
+    const uint64_t first_target = ptp_now_ns() + lead_ns;
     const unsigned int ncam = static_cast<unsigned int>(streams_.size());
 
     std::printf("action_sync: per-frame scheduled triggers at %.2f Hz, %.0f ms lead "
@@ -262,7 +281,7 @@ class SpinnakerAcquireSource final : public AcquireSource {
     first.tolerance_ms = config.tolerance_ms;
     first.check_frames = config.check_frames;
     first.expected_start_offset_ms = config.expected_start_offset_ms;
-    propagate_checkers(checkers);
+    finish_arming(checkers);
 
     triggering_ = true;
     trigger_run_.store(true, std::memory_order_relaxed);
@@ -292,7 +311,7 @@ class SpinnakerAcquireSource final : public AcquireSource {
 
         target += period_ns;
         const int64_t wake = static_cast<int64_t>(target) - static_cast<int64_t>(lead_ns);
-        const int64_t delta = wake - static_cast<int64_t>(host_now_ns());
+        const int64_t delta = wake - static_cast<int64_t>(ptp_now_ns());
         if (delta > 0) std::this_thread::sleep_for(std::chrono::nanoseconds(delta));
       }
     });
@@ -310,6 +329,8 @@ class SpinnakerAcquireSource final : public AcquireSource {
 
   Spinnaker::SystemPtr system_;
   Spinnaker::CameraList cameras_;
+  const int64_t epoch_offset_ns_;
+
   std::vector<Stream> streams_;
 
   // Per-frame triggering. `triggering_` is set once on the arming thread before

@@ -61,7 +61,7 @@ StereoView::StereoView(const std::string& title, const Config& config) : config_
   if (!glfwInit()) {
     throw std::runtime_error(
         "StereoView: glfwInit failed -- no display. Run on a machine with a screen, or use "
-        "--no-display to record and pair headless");
+        "--no-display to pair headless");
   }
 
   // No profile hint, so this is a compatibility context and the fixed-function
@@ -122,7 +122,6 @@ bool StereoView::take_edge(int key, bool& previous) {
 
 bool StereoView::take_pause_pressed() { return take_edge(GLFW_KEY_SPACE, pause_was_down_); }
 
-bool StereoView::take_record_pressed() { return take_edge(GLFW_KEY_R, record_was_down_); }
 
 void StereoView::upload(int side, const HostImage& image) {
   if (image.width == 0 || image.height == 0) return;
@@ -205,19 +204,13 @@ void StereoView::draw(const Status& status) {
   quad(0.0f, 0.0f, 1.0f, strip_h);
   glEnd();
 
-  // Recording indicator on the left of the strip, the width of the gutter.
+  // Pause glyph on the left of the strip, the width of the gutter.
   const float badge = strip_h * 0.5f;
   glBegin(GL_QUADS);
-  if (status.recording) {
-    glColor4f(0.90f, 0.20f, 0.20f, 1.0f);
-  } else {
-    glColor4f(0.20f, 0.20f, 0.24f, 1.0f);
-  }
-  quad(pad, (strip_h - badge) * 0.5f, pad + badge, (strip_h + badge) * 0.5f);
   if (status.paused) {
-    // Two vertical bars, the universal pause glyph, next to the record badge.
+    // Two vertical bars, the universal pause glyph.
     glColor4f(0.85f, 0.80f, 0.30f, 1.0f);
-    const float x = pad * 2.0f + badge;
+    const float x = pad;
     quad(x, (strip_h - badge) * 0.5f, x + badge * 0.3f, (strip_h + badge) * 0.5f);
     quad(x + badge * 0.55f, (strip_h - badge) * 0.5f, x + badge * 0.85f,
          (strip_h + badge) * 0.5f);

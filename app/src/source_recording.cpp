@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "acquire_source.hpp"
-#include "recording_source.hpp"
+#include "mcap_replay_source.hpp"
 
 namespace perception {
 namespace {
@@ -13,18 +13,24 @@ namespace {
 class RecordingAcquireSource final : public AcquireSource {
  public:
   explicit RecordingAcquireSource(const AppConfig& config)
-      : source_(std::make_unique<RecordingSource>(config.source)) {}
+      : config_path_(config.source.path),
+        source_(std::make_unique<McapReplaySource>(config.source)) {}
 
-  // Always one. RecordingSource replays a single stream by design
+  // Always one. McapReplaySource replays a single topic by design.
   uint32_t stream_count() const override { return 1; }
 
   FrameSource& source(uint32_t) override { return *source_; }
 
   std::string describe(uint32_t) const override {
-    const StreamInfo& info = source_->reader().stream(source_->stream());
-    return "recording " + source_->reader().manifest().created_utc + " stream " +
-           std::to_string(source_->stream()) + " (" + info.role + ", " + info.serial + ")";
+    std::string what = source_->topic();
+    if (source_->message_count() > 0) {
+      what += ", " + std::to_string(source_->message_count()) + " frames";
+    }
+    if (!source_->frame_id().empty()) what += ", frame " + source_->frame_id();
+    return "mcap " + config_path_ + " (" + what + ")";
   }
+
+  int64_t epoch_offset_ns() const override { return 0; }
 
   void arm_action_sync(const ActionSyncConfig& config,
                        const std::vector<ActionSyncChecker*>& checkers) override {
@@ -42,16 +48,17 @@ class RecordingAcquireSource final : public AcquireSource {
   std::string trigger_health_line() const override { return {}; }
 
  private:
-  std::unique_ptr<RecordingSource> source_;
+  std::string config_path_;
+  std::unique_ptr<McapReplaySource> source_;
 };
 
 }  // namespace
 
 std::unique_ptr<AcquireSource> make_acquire_source(const AppConfig& config) {
-  if (config.source.directory.empty()) {
+  if (config.source.path.empty()) {
     throw std::runtime_error(
         "this build replays recordings (-DPERCEPTION_SOURCE=recording) but no recording was "
-        "given: set source.recording in the config to a recording directory");
+        "given: set source.recording in the config to an .mcap file");
   }
   return std::make_unique<RecordingAcquireSource>(config);
 }

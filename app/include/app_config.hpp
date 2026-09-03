@@ -5,10 +5,11 @@
 #include <vector>
 
 #include "camera_config.hpp"
+#include "recording_config.hpp"
 #include "device_ring_buffer.hpp"
 #include "display_config.hpp"
 #include "ess_config.hpp"
-#include "recording_source.hpp"
+#include "mcap_replay_source.hpp"
 #include "stereo_calibration.hpp"
 #include "ring_pair_consumer.hpp"
 #include "types.hpp"
@@ -57,11 +58,10 @@ enum class ViewerMode {
 
 const char* to_string(ViewerMode mode);
 
-
 struct AppConfig {
   CameraConfig camera;
   std::vector<StreamConfig> streams;
-  RecordingSource::Config source;
+  McapReplaySource::Config source;
   PipelineConfig pipeline;
   UploadStage::Config upload;
   StereoConfig stereo;
@@ -70,6 +70,7 @@ struct AppConfig {
   ActionSyncConfig action_sync;
   YoloConfig yolo;
   EssConfig ess;
+  RecordingConfig recording;
 
   // Loaded only when stereo.enabled and stereo.calibration_path is set.
   bool have_calibration = false;

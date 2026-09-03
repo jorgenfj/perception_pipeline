@@ -126,16 +126,6 @@ struct StandaloneConfig {
   uint32_t buffer_count = 8;
   uint64_t max_frames = 0;  // 0 runs until interrupted
 
-  // Write every delivered frame to a recording. Off by default: this is a
-  // bring-up tool that can record, not a recorder.
-  bool record = false;
-  std::string record_root = "recordings";
-  uint32_t staging_frames = 32;
-
-  // The manifest's role for the single stream. "left" or "right" if this
-  // camera is half of a rig being recorded one eye at a time -- it is what
-  // `source.role` matches against on playback.
-  std::string record_role = "mono";
 };
 
 StandaloneConfig load_standalone_config(const std::string& path);

@@ -53,12 +53,6 @@ StereoConfig load_stereo_config(const std::string& path) {
     read(stereo, "buffer_count", "stereo", config.buffer_count);
   }
 
-  if (const YAML::Node recording = root["recording"]) {
-    read(recording, "enabled", "recording", config.record);
-    read(recording, "root", "recording", config.record_root);
-    read(recording, "staging_frames", "recording", config.staging_frames);
-  }
-
   if (const YAML::Node streams = root["streams"]) {
     if (!streams.IsSequence()) fail("streams", "expected a sequence");
     for (std::size_t i = 0; i < streams.size(); ++i) {
