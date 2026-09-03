@@ -1,0 +1,295 @@
+# Driver config for `acquire`: per-frame scheduled Action Commands at 3.5 Hz.
+#
+#   ./build/bin/acquire app/config/acquire_per_frame_3hz.yaml
+#
+# The difference from acquire.yaml is `action_sync.per_frame: true`. Instead of
+# each camera free-running on its own crystal, a host thread broadcasts one
+# PTP-scheduled Action Command per frame and every exposure is pinned to an
+# instant both cameras agree on. That is what holds two shutters together over
+# a long run; see spinnaker/README.md for why the one-shot AcquisitionStart
+# cannot.
+#
+# 3.5 Hz, not 7.5: at 1440x1080 BayerRG8 a frame is 12.44 Mbit, so 7.5 Hz needs
+# 93.3 Mbps and does not fit on a 100 Mbps link. 3.5 Hz is 43.5 Mbps and does.
+# Raise trigger_hz (and expected_hz with it) once both camera ports negotiate
+# gigabit.
+#
+# PREREQUISITE, and the thing most likely to be wrong: both cameras must be
+# slaved to ONE grandmaster. Two ptp4l instances on two NIC ports are two
+# grandmasters, and two cameras perfectly locked to different clocks pair no
+# better than free-running ones. See "Two cameras on two NIC ports" in
+# spinnaker/README.md.
+#
+# To validate sync alone, without the disparity engine, set `viewer: camera`
+# and `ess.enabled: false` below -- everything in this file that matters to
+# triggering is independent of ESS.
+
+camera:
+  serial: ""
+  timeout_ms: 1000
+
+  reconnect_attempts: -1
+  reconnect_backoff_ms: 500
+  reconnect_backoff_max_ms: 5000
+
+  # Applied in order before acquisition starts. See acquire.yaml for the full
+  # commentary on why the order matters.
+  #
+  # In per_frame mode `acquire` appends its own trigger features AFTER these --
+  # ActionDeviceKey/GroupKey/GroupMask, TriggerSelector=FrameStart,
+  # TriggerSource=Action0, TriggerMode=On, and AcquisitionFrameRateEnable=false
+  # -- so the TriggerMode and frame-rate entries below are the free-running
+  # values and are deliberately overridden. They are left in so this file still
+  # describes a working camera if per_frame is turned off.
+  features:
+    - AcquisitionMode: Continuous
+    - TriggerMode: "Off"
+
+    - PixelFormat: BayerRG8
+    - Width: 1440
+    - Height: 1080
+    - OffsetX: 0
+    - OffsetY: 0
+
+    - ExposureAuto: "Off"
+    # Microseconds. Must stay well under the trigger period (285714us at
+    # 3.5 Hz) or the sensor is still reading out when the next command fires.
+    - ExposureTime: 4000.0
+
+    - GainAuto: "Off"
+    - Gain: 0.0
+
+    # Overridden by per_frame (AcquisitionFrameRateEnable is forced false);
+    # kept in step with trigger_hz so the file does not contradict itself.
+    - AcquisitionFrameRateEnable: true
+    - AcquisitionFrameRate: 3.5
+
+    - GevSCPSPacketSize: 9000
+
+    # Non-negotiable here: a camera that is not PTP "Slave" acks NO_REF_TIME to
+    # every scheduled command and nothing fires.
+    - GevIEEE1588: "true"
+
+  stream_features:
+    - StreamBufferHandlingMode: NewestOnly
+
+# streams[0] is the reference eye. Both serials are set explicitly, and must be:
+# an empty serial picks whatever camera is found first, so on a two-camera rig
+# both entries resolve to the same one and `acquire` refuses to start. It would
+# also let the two streams swap between runs, silently swapping left and right.
+#
+# These match the roles in stereo_calibration.yaml, which is checked against
+# this section -- so a calibration cannot be applied to the wrong eye by editing
+# one file and not the other.
+streams:
+  - role: left
+    serial: "23494258"
+  - role: right
+    serial: "23494259"
+
+stereo:
+  enabled: true
+
+  # Anchored on streams[1], NOT the usual 0, and this is a workaround for the
+  # link asymmetry rather than a preference.
+  #
+  # step() leases the newest reference frame and then looks for its partner
+  # immediately. That only works if the partner has already arrived. Right is on
+  # the 100 Mbps port, so its frame lands ~112ms after left's -- a 1440x1080
+  # BayerRG8 frame is 12.44 Mbit, 124ms of serialisation at 100 Mbps against
+  # 12ms at gigabit. Anchoring on left therefore looks for a right frame that is
+  # still on the wire and every frame comes back unpaired, with timestamps that
+  # are otherwise perfect (sub-microsecond skew when a pair does form).
+  #
+  # Anchoring on the LATER stream inverts that: by the time right is published,
+  # left has been sitting in its ring for 112ms. device_depth 6 at 3.5 Hz is
+  # 1.7s of history, so there is room to spare.
+  #
+  # Set this back to 0 once both ports negotiate gigabit -- with symmetric links
+  # either stream works, and 0 is the convention everywhere else.
+  reference_stream: 1
+
+  # Must stay strictly under half the frame period -- 142857us at 3.5 Hz, so
+  # this is far inside it. With per-frame triggering working, observed skew
+  # should be microseconds, not hundreds of them: if pairing only succeeds
+  # after widening this, the triggers are not doing their job and a looser
+  # tolerance is hiding that rather than fixing it.
+  tolerance_us: 500
+
+  retry_attempts: 1
+  retry_ms: 2
+
+  # Relative to this file.
+  calibration: "stereo_calibration.yaml"
+
+source:
+  recording: ""
+
+pipeline:
+  ingress_depth: 8
+  device_depth: 6
+  max_consumers: 3
+  device_id: 0
+  reuse_wait: DeviceWait
+  write_policy: ScanForFree
+
+# `camera` for sync bring-up with no engine in the way; `ess` for the disparity
+# window, which drives the stereo pairing itself and needs ess.enabled below.
+viewer: camera
+
+display:
+  window_width: 1440
+  window_height: 1080
+  vsync: false
+  latency_scale_ms: 100.0
+
+upload:
+  scratch_slots: 4
+  use_graph: false
+
+yolo:
+  engine_path: "models/yolo26m_fp16.engine"
+  model_width: 640
+  model_height: 640
+  conf_threshold: 0.25
+
+ess:
+  enabled: true
+
+  # Relative to the executable. Built by tools/scripts/build_ess_engine.sh.
+  engine_path: "models/ess_full_fp16.engine"
+
+  # NVIDIA's prebuilt plugin library, holding the fused ops the ESS graph is
+  # built from. Loaded before the engine is deserialized; without it the plan
+  # fails with "Cannot find plugin". Absolute, ~-relative and exe-relative
+  # paths all work.
+  plugin_path: "~/.cache/perception_pipeline/ess/dnn_stereo_disparity_v4.1.0_onnx/plugins/aarch64/ess_plugins.so"
+
+  normalization:
+    mean: [0.485, 0.456, 0.406]
+    stddev: [0.229, 0.224, 0.225]
+    no_source_value: 0.449
+
+  conf_threshold: 0.0
+
+  # Pinned host slots for the disparity readback. Sized in whole disparity
+  # frames -- 960x576 float32 is 2.2MB each -- and shared by every consumer that
+  # wants the map on the host, of which the recorder is only the first. A slow
+  # consumer costs slots rather than blocking the GPU, so `download: ... drops=`
+  # climbing means one held a frame longer than this is deep.
+  readback_slots: 4
+
+  colormap: jet
+  display_min_disparity: 0.0
+  display_max_disparity: 64.0
+
+# Write an MCAP of what this run saw: the camera frames, and the ESS disparity
+# computed from them. Off by default -- at 3.5 Hz this is ~18.6 MB/s.
+#
+# The one recorder in the tree: MCAP, and what -DPERCEPTION_SOURCE=recording
+# replays. This one exists because disparity only exists
+# here: stereo_view links no CUDA on purpose, so it cannot run the engine.
+#
+# The messages are CDR-encoded sensor_msgs/Image and stereo_msgs/DisparityImage
+# under the "ros2" profile, so `ros2 bag play` and Foxglove open the file
+# directly. Timestamps are the cameras' own PTP clock, which counts TAI -- the
+# file says so in its metadata, because a reader assuming UTC lands 37s out.
+recording:
+  enabled: false
+
+  # A timestamped .mcap is created in here per run.
+  root: "recordings"
+
+  # Seconds of each topic the recorder holds while the disk catches up. Per
+  # topic and scaled by its rate, so one number gives a 3.5Hz camera 7 slots
+  # (10.9MB) and a 400Hz sensor 800 (410KB) -- the single shared depth this
+  # replaces could not be right for both.
+  #
+  # Camera frames are COPIED into their budget: the ingress slots are the
+  # camera's own DMA targets and holding one starves it. A full budget drops
+  # that topic's messages and counts them; the recorder never throttles
+  # acquisition, or it would manufacture the gaps it exists to show.
+  buffer_seconds: 2.0
+
+  # Ceiling per topic, applied after buffer_seconds -- what stops raising that
+  # from reserving a gigabyte. The startup line prints the total reserved.
+  #
+  # It binds for the image and disparity topics, which reserve a flat 4MiB per
+  # message rather than measuring the frame: 16 gives them four slots where
+  # buffer_seconds asked for seven, so they hold about a second. Raise this to
+  # 32 to get the full two seconds, at 96MiB of buffers instead of 60. The
+  # health line's `peak k/depth` is where the depth in force shows up.
+  topic_memory_mb: 16
+
+  # mcap chunk size, and so crash exposure in bytes: only whole chunks are
+  # readable. The 768KiB default is smaller than one 1.56MB frame.
+  chunk_mb: 4
+
+  # How often the open chunk is closed even when not full, bounding the same
+  # exposure in time. Page cache, not fsync: survives a crash, not a power cut.
+  flush_seconds: 2.0
+
+  # What to record, by topic name. A list rather than a flag per kind, because
+  # the set of things worth recording grows and a bool each would not.
+  #
+  # A name nothing produces stops the run rather than recording silence, so a
+  # typo is caught immediately -- and so is asking for /disparity on a build or
+  # a viewer mode that has no engine. Images are ~10.9MB/s at 3.5Hz, disparity
+  # ~7.7MB/s.
+  topics:
+    - /left/image_raw
+    - /right/image_raw
+    - /disparity
+
+  # zstd. The Bayer frames compress little and the disparity compresses well.
+  compress: true
+
+# One PTP-scheduled Action Command per frame. This is the section this config
+# exists for.
+action_sync:
+  enabled: true
+
+  # Written to the cameras for you in per_frame mode, so they do not need to be
+  # in camera.features. Must match across every camera in the group.
+  device_key: 1
+  group_key: 1
+  group_mask: 1
+
+  # The whole point of this file. See ActionSyncConfig::per_frame in
+  # capture/include/camera_config.hpp for what it costs and what it buys.
+  per_frame: true
+
+  # The capture rate: with AcquisitionFrameRateEnable forced off, nothing else
+  # paces acquisition.
+  trigger_hz: 3.5
+
+  # How far ahead each command is scheduled. Commands in flight is roughly
+  # trigger_lead_ms / (1000 / trigger_hz) -- 0.35 at 3.5 Hz, comfortably inside
+  # any ActionQueueSize. Bring it down before raising the rate, not after:
+  # exceeding the queue comes back as OVERFLOW acks in the `trig` line.
+  trigger_lead_ms: 100.0
+
+  # Default mode only; per_frame uses trigger_lead_ms.
+  lead_time_ms: 500.0
+
+  # The rate actually in force, which here is trigger_hz. Out of step with it,
+  # every frame reads as mis-spaced when the only thing wrong is this number.
+  expected_hz: 3.5
+  check_frames: 60
+  tolerance_ms: 2.0
+
+  # GetTimeStamp()'s latch point relative to the trigger instant is a sensor
+  # convention, not a sync fault -- a camera latching at end-of-exposure reports
+  # a start offset equal to ExposureTime.
+  #
+  # Measured on this rig: 7.992ms against an ExposureTime of 8000us, i.e. these
+  # cameras latch at end of exposure, to within 8 microseconds. Left at 0.0 the
+  # checker reports FAIL for a rig that is in fact keeping time to a hundredth
+  # of a millisecond. Keep this in step with ExposureTime above -- change one
+  # and the verdict starts failing on the other.
+  expected_start_offset_ms: 8.0
+
+  # Applying the camera config resets the PTP state machine, so both cameras
+  # come back in "Listening" and need a few Announce intervals to reach
+  # "Slave". Sampling once and giving up fails a rig that was about to work.
+  ptp_wait_ms: 20000

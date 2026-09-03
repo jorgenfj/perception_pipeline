@@ -5,6 +5,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <array>
+#include <cstdlib>
 #include <filesystem>
 #include <stdexcept>
 #include <unordered_map>
@@ -158,6 +159,7 @@ AppConfig load_app_config(const std::string& path) {
     read(ess, "conf_threshold", "ess", config.ess.conf_threshold);
     read(ess, "display_min_disparity", "ess", config.ess.display_min_disparity);
     read(ess, "display_max_disparity", "ess", config.ess.display_max_disparity);
+    read(ess, "readback_slots", "ess", config.ess.readback_slots);
     if (ess["colormap"]) {
       config.ess.colormap = readColormap(scalar(ess["colormap"], "ess.colormap"), "ess.colormap");
     }
@@ -169,13 +171,17 @@ AppConfig load_app_config(const std::string& path) {
     }
   }
 
+  // Parsed by recording/, which owns the section: one parser per section, the
+  // way the camera and action_sync blocks above are handled.
+  config.recording = load_recording_config(path);
+
   // Only consulted by a -DPERCEPTION_SOURCE=recording build, but always parsed:
   // one config file has to describe both, or switching source means editing the
   // config as well as reconfiguring and the two versions drift apart.
   if (const YAML::Node source = root["source"]) {
-    read(source, "recording", "source", config.source.directory);
-    read(source, "stream", "source", config.source.stream);
+    read(source, "recording", "source", config.source.path);
     read(source, "role", "source", config.source.role);
+    read(source, "topic", "source", config.source.topic);
     read(source, "speed", "source", config.source.speed);
     read(source, "loop", "source", config.source.loop);
     read(source, "rebase_timestamps", "source", config.source.rebase_timestamps);
@@ -282,6 +288,9 @@ AppConfig load_app_config(const std::string& path) {
            "empty, but ess.enabled is set -- every NGC ESS export is built from fused ops that "
            "only exist in the plugin library, and the engine will not deserialize without it");
     }
+    if (config.ess.readback_slots == 0) {
+      fail("ess.readback_slots", "must be at least 1 -- a pool of nothing retires no copies");
+    }
     if (!(config.ess.display_max_disparity > config.ess.display_min_disparity)) {
       fail("ess.display_max_disparity", "must be greater than ess.display_min_disparity");
     }
@@ -305,7 +314,20 @@ std::string default_config_path() {
 }
 
 std::string resolve_next_to_exe(const std::string& path) {
-  if (path.empty() || std::filesystem::path(path).is_absolute()) return path;
+  if (path.empty()) return path;
+
+  // A leading ~ is expanded first: paths that legitimately live outside the
+  // tree -- the ESS plugin, which the build script drops in ~/.cache -- are
+  // otherwise unwritable in a config file, since a bare ~ is not absolute and
+  // would be resolved against bin/ instead.
+  if (path == "~" || path.rfind("~/", 0) == 0) {
+    const char* home = std::getenv("HOME");
+    if (home && *home) {
+      return (std::filesystem::path(home) / path.substr(path.size() > 1 ? 2 : 1)).string();
+    }
+  }
+
+  if (std::filesystem::path(path).is_absolute()) return path;
   return (exe_dir() / path).string();
 }
 

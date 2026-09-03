@@ -87,7 +87,7 @@ streams:
 # their own start instant, destroying the shared epoch pairing depends on.
 # `acquire` says so and carries on rather than refusing to run.
 stereo:
-  enabled: false
+  enabled: true
 
   # lease_latest() anchors on this stream; the other one is searched for the
   # partner carrying the same instant.
@@ -113,15 +113,17 @@ stereo:
   # applied to the wrong eye. Set to "" to pair without one.
   calibration: "stereo_calibration.yaml"
 
-# This source section is only read when -DPERCEPTION_SOURCE=recording.
+# This source section is only read when -DPERCEPTION_SOURCE=recording, which
+# replays an .mcap written by a previous run instead of opening cameras.
 source:
+  # The .mcap file to replay.
   recording: ""
 
-  # Which half of a stereo recording to feed the pipeline. `role` wins if set;
-  # naming it is safer than the index, which is just the order the recorder
-  # happened to open the cameras in.
+  # Which image topic feeds the pipeline. `topic` wins if set; otherwise
+  # "/<role>/image_raw" is used, and leaving both empty takes the first image
+  # topic in the file. A stereo recording holds both eyes; this replays one.
   role: "left"
-  stream: 0
+  topic: ""
 
   # Replay rate. Above 1.0 this is a load knob as much as a time one -- it
   # raises the frame rate the pipeline has to keep up with.
@@ -134,7 +136,8 @@ source:
   # exactly. On, because LatencyProbe measures latency as now - timestamp: with
   # the file's original stamps a recording made last week reports a week of
   # latency and every latency number in the report becomes noise. Turn it off
-  # only to push the recorded stamps through verbatim.
+  # only to push the recorded stamps through verbatim -- they are UTC either
+  # way, since the pipeline rebased them before they were written.
   rebase_timestamps: true
 
   # How long a frame waits for a free ingress slot before it is given up on.
@@ -168,7 +171,7 @@ pipeline:
 #   ess      -- the ESS disparity window (EssViewerConsumer). Takes no ring
 #               consumer of its own: it drives the stereo pairing, so it needs
 #               stereo.enabled, a calibration, and ess.enabled below
-viewer: yolo
+viewer: camera
 
 #
 # vsync off on purpose: parking the swap until the panel is ready adds up to a
@@ -206,7 +209,7 @@ yolo:
 # window owns the engine and drives the pairing; otherwise the engine runs from
 # the stereo pair callback in acquire_main.cpp and only logs.
 ess:
-  enabled: false
+  enabled: true
 
   # Relative to the executable, like yolo.engine_path.
   engine_path: "models/ess_full_fp16.engine"
@@ -234,6 +237,13 @@ ess:
     # neutral thing a convolution can be handed.
     no_source_value: 0.449
 
+  # Pinned host slots for the disparity readback. Sized in whole disparity
+  # frames -- 960x576 float32 is 2.2MB each -- and shared by every consumer that
+  # wants the map on the host, of which the recorder is only the first. A slow
+  # consumer costs slots rather than blocking the GPU, so `download: ... drops=`
+  # climbing means one held a frame longer than this is deep.
+  readback_slots: 4
+
   # Below this the network says the disparity at that pixel is not to be
   # believed: drawn black by the viewer, flagged in the log line. 0 trusts
   # everything.
@@ -257,6 +267,67 @@ ess:
 # Needs PTP working first: a master on the host (see spinnaker/README.md) and
 # `GevIEEE1588: "true"` in camera.features above, which is already set. Cameras
 # that are not "Slave" ack NO_REF_TIME and nothing fires.
+# Write an MCAP of what this run saw: the camera frames, and the ESS disparity
+# computed from them. Off by default -- at 3.5 Hz this is ~18.6 MB/s.
+#
+# The one recorder in the tree: MCAP, and what -DPERCEPTION_SOURCE=recording
+# replays. This one exists because disparity only exists
+# here: stereo_view links no CUDA on purpose, so it cannot run the engine.
+#
+# The messages are CDR-encoded sensor_msgs/Image and stereo_msgs/DisparityImage
+# under the "ros2" profile, so `ros2 bag play` and Foxglove open the file
+# directly. Timestamps are the cameras' own PTP clock, which counts TAI -- the
+# file says so in its metadata, because a reader assuming UTC lands 37s out.
+recording:
+  enabled: true
+
+  # A timestamped .mcap is created in here per run.
+  root: "recordings"
+
+  # Seconds of each topic the recorder holds while the disk catches up. Per
+  # topic and scaled by its rate, so one number gives a 3.5Hz camera 7 slots
+  # (10.9MB) and a 400Hz sensor 800 (410KB) -- the single shared depth this
+  # replaces could not be right for both.
+  #
+  # Camera frames are COPIED into their budget: the ingress slots are the
+  # camera's own DMA targets and holding one starves it. A full budget drops
+  # that topic's messages and counts them; the recorder never throttles
+  # acquisition, or it would manufacture the gaps it exists to show.
+  buffer_seconds: 2.0
+
+  # Ceiling per topic, applied after buffer_seconds -- what stops raising that
+  # from reserving a gigabyte. The startup line prints the total reserved.
+  #
+  # It binds for the image and disparity topics, which reserve a flat 4MiB per
+  # message rather than measuring the frame: 16 gives them four slots where
+  # buffer_seconds asked for seven, so they hold about a second. Raise this to
+  # 32 to get the full two seconds, at 96MiB of buffers instead of 60. The
+  # health line's `peak k/depth` is where the depth in force shows up.
+  topic_memory_mb: 16
+
+  # mcap chunk size, and so crash exposure in bytes: only whole chunks are
+  # readable. The 768KiB default is smaller than one 1.56MB frame.
+  chunk_mb: 4
+
+  # How often the open chunk is closed even when not full, bounding the same
+  # exposure in time. Page cache, not fsync: survives a crash, not a power cut.
+  flush_seconds: 2.0
+
+  # What to record, by topic name. A list rather than a flag per kind, because
+  # the set of things worth recording grows and a bool each would not.
+  #
+  # A name nothing produces stops the run rather than recording silence, so a
+  # typo is caught immediately -- and so is asking for /disparity on a build or
+  # a viewer mode that has no engine. Images are ~10.9MB/s at 3.5Hz, disparity
+  # ~7.7MB/s.
+  topics:
+    - /left/image_raw
+    - /right/image_raw
+    - /disparity
+
+  # zstd. The Bayer frames compress little and the disparity compresses well.
+  compress: false
+
 action_sync:
   enabled: false
 

@@ -12,14 +12,16 @@ add_executable(stereo_pairer_test stereo_pairer_test.cpp)
 target_link_libraries(stereo_pairer_test PRIVATE perception_stereo)
 add_test(NAME stereo_pairer_test COMMAND stereo_pairer_test)
 
-add_executable(recording_test recording_test.cpp)
-target_link_libraries(recording_test PRIVATE perception_recording)
-add_test(NAME recording_test COMMAND recording_test)
-
-
 add_executable(cdr_writer_test cdr_writer_test.cpp)
 target_link_libraries(cdr_writer_test PRIVATE perception_recording)
 add_test(NAME cdr_writer_test COMMAND cdr_writer_test)
+
+# The round trip, so it needs the camera library for HeapFrameSink as well.
+add_executable(mcap_replay_source_test mcap_replay_source_test.cpp)
+target_link_libraries(mcap_replay_source_test
+  PRIVATE perception_recording perception_camera PkgConfig::LZ4 PkgConfig::ZSTD)
+target_include_directories(mcap_replay_source_test PRIVATE "${CMAKE_SOURCE_DIR}/third_party")
+add_test(NAME mcap_replay_source_test COMMAND mcap_replay_source_test)
 
 add_executable(mcap_recorder_test mcap_recorder_test.cpp)
 target_link_libraries(mcap_recorder_test
@@ -52,5 +54,28 @@ if(PERCEPTION_WITH_CUDA)
   add_executable(upload_stage_test upload_stage_test.cpp)
   target_link_libraries(upload_stage_test PRIVATE perception_core)
   add_test(NAME upload_stage_test COMMAND upload_stage_test)
+
+  # No GPU needed -- the ring is plain host memory -- but it lives in
+  # perception_core, which links CUDA.
+  add_executable(host_frame_ring_test host_frame_ring_test.cpp)
+  target_link_libraries(host_frame_ring_test PRIVATE perception_core)
+  add_test(NAME host_frame_ring_test COMMAND host_frame_ring_test)
+
+  # Plain host memory too -- the holder never touches a device -- but it links
+  # perception_core, which links CUDA.
+  add_executable(latest_frame_test latest_frame_test.cpp)
+  target_link_libraries(latest_frame_test PRIVATE perception_core)
+  add_test(NAME latest_frame_test COMMAND latest_frame_test)
+
+  # Reaches into app/include for the sink: it is the seam between the camera
+  # half of the tree and this one, and it belongs to neither library.
+  add_executable(ring_frame_sink_test ring_frame_sink_test.cpp)
+  target_link_libraries(ring_frame_sink_test PRIVATE perception_core perception_camera)
+  target_include_directories(ring_frame_sink_test PRIVATE "${CMAKE_SOURCE_DIR}/app/include")
+  add_test(NAME ring_frame_sink_test COMMAND ring_frame_sink_test)
+
+  add_executable(download_stage_test download_stage_test.cpp)
+  target_link_libraries(download_stage_test PRIVATE perception_core)
+  add_test(NAME download_stage_test COMMAND download_stage_test)
 
 endif()

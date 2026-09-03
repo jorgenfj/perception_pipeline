@@ -23,6 +23,14 @@ struct EssConfig {
   // Disparities scoring under this are drawn black and reported untrusted.
   float conf_threshold = 0.0f;
 
+  // Pinned host slots for the disparity readback, in DownloadStage. Sized in
+  // whole disparity frames (960x576 float32 is 2.2MB each), and shared by every
+  // consumer that wants the map on the host -- the recorder is only the first.
+  // It bounds how many D2H copies may be in flight, so a slow consumer costs
+  // slots rather than blocking the GPU: `download: ... drops=` climbing means
+  // one held a frame longer than this is deep.
+  uint32_t readback_slots = 4;
+
   // --- viewer: ess ----------------------------------------------------------
   DisparityColormap colormap = DisparityColormap::Turbo;
 

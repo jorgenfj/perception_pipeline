@@ -1,9 +1,7 @@
 find_package(yaml-cpp REQUIRED)
 
 add_library(perception_recording
-  src/recording_reader.cpp
-  src/recording_writer.cpp
-  src/recording_source.cpp
+  src/mcap_replay_source.cpp
   src/mcap_recorder.cpp
   src/ros_messages.cpp
   src/recording_config.cpp)
